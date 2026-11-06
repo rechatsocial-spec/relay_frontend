@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Ramorra.io</string>
+    <string name="title_activity_main">Ramorra.io</string>
+    <string name="package_name">io.ramorra.app</string>
+    <string name="custom_url_scheme">io.ramorra.app</string>
+</resources>

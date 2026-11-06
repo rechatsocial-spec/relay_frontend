@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+html, body, #root { margin: 0; min-height: 100%; }
+body { background: #F2F5FA; }
+
+/* ---------- App feel ---------- */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body {
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+button, a, [role="button"] { touch-action: manipulation; }
+button:not(:disabled) { cursor: pointer; transition: transform .12s ease, filter .12s ease, background-color .15s ease; }
+button:not(:disabled):active { transform: scale(.97); filter: brightness(.96); }
+:focus-visible { outline: 2px solid #0E9461; outline-offset: 2px; }
+
+/* ---------- Cards and tables ---------- */
+.relay-kpi-card {
+  border-radius: 12px !important;
+  box-shadow: 0 1px 2px rgba(22, 33, 28, .05), 0 4px 14px rgba(22, 33, 28, .05);
+  transition: box-shadow .2s ease, transform .2s ease;
+}
+.relay-kpi-card:hover { box-shadow: 0 2px 4px rgba(22, 33, 28, .07), 0 8px 22px rgba(22, 33, 28, .08); }
+.relay-table-wrap {
+  border-radius: 12px !important;
+  box-shadow: 0 1px 2px rgba(22, 33, 28, .05), 0 4px 14px rgba(22, 33, 28, .04);
+}
+.relay-table-wrap tbody tr { transition: background-color .15s ease; }
+.relay-table-wrap tbody tr:hover { background: #F5F8FE; }
+.relay-modal-card { border-radius: 18px !important; box-shadow: 0 24px 70px rgba(10, 20, 50, .35); }
+
+/* ---------- Page transition ---------- */
+@keyframes relay-fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.relay-page > * { animation: relay-fade-up .22s ease-out both; }
+
+/* ---------- Scrollbars (desktop) ---------- */
+* { scrollbar-width: thin; scrollbar-color: #C5CEDF transparent; }
+
+/* ---------- Phone ---------- */
+@media (max-width: 768px) {
+  /* 16px stops Android/iOS from zooming when a field is focused */
+  input, textarea, select { font-size: 16px !important; }
+  /* keep content clear of the status bar and gesture bar */
+  .relay-topbar { padding-top: max(10px, env(safe-area-inset-top)) !important; }
+  .relay-bottom-nav { padding-bottom: max(6px, env(safe-area-inset-bottom)) !important; }
+  .relay-kpi-card { border-radius: 14px !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* ---------- User preferences (Settings) ---------- */
+html.relay-dark, html.relay-dark body { background: #0d110f; color-scheme: dark; }
+html.relay-dark #root { filter: invert(.9) hue-rotate(180deg); }
+html.relay-dark img, html.relay-dark video { filter: invert(1) hue-rotate(180deg); }
+html.relay-contrast #root { filter: contrast(1.25); }
+html.relay-dark.relay-contrast #root { filter: invert(.9) hue-rotate(180deg) contrast(1.25); }
+html[data-text-size="large"] .relay-page { zoom: 1.12; }
+html[data-text-size="xlarge"] .relay-page { zoom: 1.25; }
+html.relay-reduce-motion *, html.relay-reduce-motion *::before, html.relay-reduce-motion *::after {
+  animation: none !important; transition: none !important; scroll-behavior: auto !important;
+}
