@@ -98,7 +98,7 @@ function AuthProvider({ children }) {
   const [auth, setAuth] = useState(loadSession); // { token, role, name, userId }
 
   const startSession = (data) => {
-    const next = { token: data.access_token, role: data.role, name: data.name, userId: data.user_id };
+    const next = { token: data.access_token, role: data.role, name: data.name, userId: data.user_id, hiddenPages: data.hidden_pages || [] };
     saveSession(next);
     setAuth(next);
     return next;
@@ -108,6 +108,14 @@ function AuthProvider({ children }) {
   // `credential` is the ID token Google Identity Services gives the browser.
   const loginWithGoogle = async (credential) =>
     startSession(await apiFetch("/auth/google", { method: "POST", body: { credential } }));
+  // Super Admin can change an Admin's visible pages at any time - re-sync.
+  const setHiddenPages = (hiddenPages) =>
+    setAuth((a) => {
+      if (!a) return a;
+      const next = { ...a, hiddenPages };
+      saveSession(next);
+      return next;
+    });
   const logout = () => {
     saveSession(null);
     setAuth(null);
@@ -122,7 +130,7 @@ function AuthProvider({ children }) {
   });
 
   return (
-    <AuthContext.Provider value={{ ...auth, isAuthed: !!auth, login, loginWithGoogle, logout }}>
+    <AuthContext.Provider value={{ ...auth, isAuthed: !!auth, login, loginWithGoogle, logout, setHiddenPages }}>
       {children}
     </AuthContext.Provider>
   );
@@ -582,7 +590,7 @@ function LoginScreen() {
       <form onSubmit={submit} style={{ width: 380, background: C.panel, borderRadius: 12 }} className="relay-login-form px-7 py-8">
         <div className="flex items-center gap-2 mb-1">
           <div className="w-7 h-7 flex items-center justify-center" style={{ background: C.jade, borderRadius: 7 }}><InboxIcon size={15} color="white" /></div>
-          <span className="text-[17px] font-semibold" style={{ fontFamily: F.d, color: C.ink }}>Ramorra CRM</span>
+          <span className="text-[17px] font-semibold" style={{ fontFamily: F.d, color: C.ink }}>Rechat</span>
         </div>
         <p className="text-[12px] mb-6" style={{ fontFamily: F.b, color: C.inkSoft }}>WhatsApp communication & automation platform</p>
 
@@ -649,8 +657,8 @@ const NAV_SUPER = [
 ];
 
 function Sidebar({ role, page, setPage, collapsed, setCollapsed, mobileOpen, setMobileOpen }) {
-  const { logout } = useAuth();
-  const items = role === "super_admin" ? NAV_SUPER : NAV_ADMIN;
+  const { logout, hiddenPages = [] } = useAuth();
+  const items = role === "super_admin" ? NAV_SUPER : NAV_ADMIN.filter((i) => !hiddenPages.includes(i.key));
 
   return (
     <div
@@ -670,7 +678,7 @@ function Sidebar({ role, page, setPage, collapsed, setCollapsed, mobileOpen, set
         </div>
         {!collapsed && (
           <span className="text-[15.5px] font-semibold ml-2" style={{ fontFamily: F.d, color: "white" }}>
-            Ramorra.io CRM
+            Rechat
           </span>
         )}
 
@@ -1037,16 +1045,32 @@ function AddNumberModal({ admins, onClose, onAdded }) {
 // ============================================================
 function AdminsPage() {
   const admins = useApiList("/admins");
+  const { token } = useAuth();
   const [showAdd, setShowAdd] = useState(false);
+  const [pagesFor, setPagesFor] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const [actionError, setActionError] = useState(null);
+
+  const confirmDelete = async () => {
+    try {
+      await apiFetch(`/admins/${deleting.id}`, { method: "DELETE", token });
+      setDeleting(null);
+      admins.reload();
+    } catch (err) {
+      setActionError(err.message);
+      setDeleting(null);
+    }
+  };
 
   return (
     <div>
       <PageHeader title="Admins" desc={admins.loading ? "Loading..." : `${admins.data.length} admins`} action={<PrimaryBtn onClick={() => setShowAdd(true)}><span className="flex items-center gap-1.5"><Plus size={13} /> Add admin</span></PrimaryBtn>} />
 
       {admins.error && <ErrorBanner message={admins.error} onRetry={admins.reload} />}
+      {actionError && <ErrorBanner message={actionError} onRetry={() => setActionError(null)} />}
       {admins.loading && <TableSkeleton rows={8} />}
       {!admins.loading && !admins.error && (
-        <Table columns={["Admin", "Email", "Phone", "Numbers", "Messages", "Leads", "Conversion", "Status"]}>
+        <Table columns={["Admin", "Email", "Phone", "Numbers", "Messages", "Leads", "Conversion", "Status", "Actions"]}>
           {admins.data.map((a) => (
             <tr key={a.id}>
               <Td><span className="font-medium">{a.name}</span></Td>
@@ -1057,13 +1081,75 @@ function AdminsPage() {
               <Td mono>{a.leads}</Td>
               <Td mono>{a.conversion_rate}%</Td>
               <Td><StatusPill status={a.status} /></Td>
+              <Td>
+                <div className="flex gap-2">
+                  <button onClick={() => setPagesFor(a)} className="px-2.5 py-1 text-[11.5px] font-medium" style={{ fontFamily: F.b, color: C.inkSoft, border: `1px solid ${C.hairline}`, borderRadius: 6 }}>Pages</button>
+                  <button onClick={() => setDeleting(a)} className="px-2.5 py-1 text-[11.5px] font-medium flex items-center gap-1" style={{ fontFamily: F.b, color: C.rust, border: `1px solid ${C.hairline}`, borderRadius: 6 }}><Trash2 size={12} /> Delete</button>
+                </div>
+              </Td>
             </tr>
           ))}
         </Table>
       )}
 
+      {pagesFor && <AdminPagesModal admin={pagesFor} onClose={() => setPagesFor(null)} onSaved={() => { setPagesFor(null); admins.reload(); }} />}
+      {deleting && (
+        <Modal title="Delete admin" onClose={() => setDeleting(null)}>
+          <p className="text-[13px] mb-2" style={{ fontFamily: F.b, color: C.ink }}>
+            Delete <b>{deleting.name}</b> ({deleting.email})?
+          </p>
+          <p className="text-[12px] mb-4" style={{ fontFamily: F.b, color: C.rust }}>
+            This permanently removes their account and all their WhatsApp numbers, contacts, conversations, campaigns, automations and chatbots. It cannot be undone.
+          </p>
+          <div className="flex gap-2">
+            <GhostBtn onClick={() => setDeleting(null)}>Cancel</GhostBtn>
+            <button onClick={confirmDelete} className="px-4 py-2 text-[12.5px] font-medium text-white" style={{ fontFamily: F.b, background: C.rust, borderRadius: 7 }}>Delete permanently</button>
+          </div>
+        </Modal>
+      )}
+
       {showAdd && <AddAdminModal onClose={() => setShowAdd(false)} onAdded={() => { setShowAdd(false); admins.reload(); }} />}
     </div>
+  );
+}
+
+const PAGE_TOGGLES = NAV_ADMIN.map(({ key, label }) => ({ key, label }));
+
+function AdminPagesModal({ admin, onClose, onSaved }) {
+  const { token } = useAuth();
+  const [hidden, setHidden] = useState(admin.hidden_pages || []);
+  const [error, setError] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const toggle = (key) => setHidden((h) => (h.includes(key) ? h.filter((k) => k !== key) : [...h, key]));
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await apiFetch(`/admins/${admin.id}`, { method: "PATCH", token, body: { hidden_pages: hidden } });
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={`Pages for ${admin.name}`} onClose={onClose}>
+      <p className="text-[12px] mb-3" style={{ fontFamily: F.b, color: C.inkSoft }}>Tick the pages this admin can see in their menu.</p>
+      {PAGE_TOGGLES.map((p) => (
+        <label key={p.key} className="flex items-center gap-2.5 py-1.5 text-[13px] cursor-pointer" style={{ fontFamily: F.b, color: C.ink }}>
+          <input type="checkbox" checked={!hidden.includes(p.key)} onChange={() => toggle(p.key)} />
+          {p.label}
+        </label>
+      ))}
+      {error && <div className="text-[11.5px] mt-2" style={{ fontFamily: F.b, color: C.rust }}>{error}</div>}
+      <div className="flex gap-2 mt-4">
+        <GhostBtn onClick={onClose}>Cancel</GhostBtn>
+        <PrimaryBtn disabled={saving} onClick={save}>{saving ? "Saving..." : "Save"}</PrimaryBtn>
+      </div>
+    </Modal>
   );
 }
 
@@ -2709,8 +2795,20 @@ function Shell() {
 }
 
 function Workspace() {
-  const { role } = useAuth();
-  const [page, setPage] = useState("dashboard");
+  const { role, token, hiddenPages = [], setHiddenPages } = useAuth();
+  const navItems = role === "super_admin" ? NAV_SUPER : NAV_ADMIN.filter((i) => !hiddenPages.includes(i.key));
+  const firstPage = navItems[0]?.key || "inbox";
+  const [page, setPage] = useState(firstPage);
+
+  // Pick up page-visibility changes made by the Super Admin since sign-in.
+  useEffect(() => {
+    if (role === "super_admin") return;
+    apiFetch("/admins/me", { token }).then((me) => setHiddenPages(me.hidden_pages || [])).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Never render a page this admin is not allowed to see.
+  const allowed = navItems.some((i) => i.key === page);
+  useEffect(() => { if (!allowed) setPage(firstPage); }, [allowed, firstPage]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -2751,7 +2849,7 @@ function Workspace() {
 
       <div className="relay-main flex-1 flex flex-col min-w-0 min-h-0">
         <Topbar onMenu={() => { setSidebarCollapsed(false); setMobileMenuOpen(true); }} />
-        <div className="relay-page flex-1 px-5 py-5">{pageMap[page]}</div>
+        <div className="relay-page flex-1 px-5 py-5">{allowed ? pageMap[page] : null}</div>
       </div>
     </div>
   );
