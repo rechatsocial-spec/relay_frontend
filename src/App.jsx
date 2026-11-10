@@ -945,6 +945,7 @@ function AdminDashboard() {
 function NumbersPage({ role }) {
   const [statusFilter, setStatusFilter] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
+  const [showLink, setShowLink] = useState(false);
   const [pageNum, setPageNum] = useState(1);
   const perPage = 10;
 
@@ -956,7 +957,7 @@ function NumbersPage({ role }) {
 
   return (
     <div>
-      <PageHeader title="WhatsApp Numbers" desc={numbers.loading ? "Loading..." : `${numbers.data.length} numbers connected`} action={role === "super_admin" && <PrimaryBtn onClick={() => setShowAdd(true)}><span className="flex items-center gap-1.5"><Plus size={13} /> Add number</span></PrimaryBtn>} />
+      <PageHeader title="WhatsApp Numbers" desc={numbers.loading ? "Loading..." : `${numbers.data.length} numbers connected`} action={role === "super_admin" && <div className="flex gap-2"><GhostBtn onClick={() => setShowLink(true)}>Link via Unipile</GhostBtn><PrimaryBtn onClick={() => setShowAdd(true)}><span className="flex items-center gap-1.5"><Plus size={13} /> Add number</span></PrimaryBtn></div>} />
 
       <div className="flex gap-1.5 mb-3">
         {["all", "active", "warning", "error", "inactive"].map((s) => (
@@ -994,7 +995,79 @@ function NumbersPage({ role }) {
       {showAdd && (
         <AddNumberModal admins={admins.data} onClose={() => setShowAdd(false)} onAdded={() => { setShowAdd(false); numbers.reload(); }} />
       )}
+      {showLink && (
+        <UnipileLinkModal admins={admins.data} onClose={() => setShowLink(false)} onLinked={() => { setShowLink(false); numbers.reload(); }} />
+      )}
     </div>
+  );
+}
+
+// Links a WhatsApp number through Unipile: opens Unipile's hosted QR / pairing
+// page in a new tab, then polls /numbers until the new number shows up.
+function UnipileLinkModal({ admins, onClose, onLinked }) {
+  const { token } = useAuth();
+  const [form, setForm] = useState({ display_name: "", admin_id: admins[0]?.id || "" });
+  const [error, setError] = useState(null);
+  const [waiting, setWaiting] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const knownIds = useRef(null);
+  const onLinkedRef = useRef(onLinked);
+  useEffect(() => { onLinkedRef.current = onLinked; });
+
+  useEffect(() => {
+    if (!waiting) return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const list = await apiFetch("/numbers", { token });
+        if (stopped) return;
+        if (list.some((n) => n.unipile_account_id && !knownIds.current.has(n.unipile_account_id))) onLinkedRef.current();
+      } catch { /* keep polling */ }
+    };
+    const t = setInterval(poll, 3000);
+    return () => { stopped = true; clearInterval(t); };
+  }, [waiting, token]);
+
+  const start = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const existing = await apiFetch("/numbers", { token });
+      knownIds.current = new Set(existing.map((n) => n.unipile_account_id).filter(Boolean));
+      const { link } = await apiFetch("/unipile/link", { method: "POST", token, body: form });
+      window.open(link, "_blank", "noopener");
+      setWaiting(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal title="Link WhatsApp via Unipile" onClose={onClose}>
+      {!waiting ? (
+        <>
+          <Field label="Display name"><input style={inputStyle} placeholder="Sales Line — Mumbai" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} /></Field>
+          <Field label="Assigned admin">
+            <select style={inputStyle} value={form.admin_id} onChange={(e) => setForm({ ...form, admin_id: e.target.value })}>
+              {admins.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </Field>
+          <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.inkSoft }}>A Unipile page opens in a new tab. On the phone: WhatsApp → Linked devices → Link a device, then scan the QR code (or use the pairing code).</div>
+          {error && <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.rust }}>{error}</div>}
+          <div className="flex gap-2 mt-4">
+            <GhostBtn onClick={onClose}>Cancel</GhostBtn>
+            <PrimaryBtn disabled={submitting || !form.admin_id} onClick={start}>{submitting ? "Preparing..." : "Open link page"}</PrimaryBtn>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="text-[12.5px] mb-4" style={{ fontFamily: F.b, color: C.ink }}>Waiting for you to finish linking in the other tab… this closes automatically once the number is connected.</div>
+          <div className="flex gap-2 mt-4"><GhostBtn onClick={onClose}>Close</GhostBtn></div>
+        </>
+      )}
+    </Modal>
   );
 }
 
