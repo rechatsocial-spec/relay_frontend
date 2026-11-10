@@ -620,9 +620,6 @@ function LoginScreen() {
         )}
 
         <PrimaryBtn full disabled={submitting}>{submitting ? "Signing in..." : "Sign in"}</PrimaryBtn>
-        <p className="text-[11px] text-center mt-4" style={{ fontFamily: F.b, color: C.inkFaint }}>
-          Seeded logins — Super Admin: deepa@relaycrm.io · Admin: rahul.sharma@relaycrm.io<br />password for both: password123
-        </p>
       </form>
     </div>
   );
@@ -1049,7 +1046,18 @@ function AdminsPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [pagesFor, setPagesFor] = useState(null);
   const [deleting, setDeleting] = useState(null);
+  const [deletingAll, setDeletingAll] = useState(false);
   const [actionError, setActionError] = useState(null);
+
+  const confirmDeleteAll = async () => {
+    try {
+      await apiFetch("/admins", { method: "DELETE", token });
+    } catch (err) {
+      setActionError(err.message);
+    }
+    setDeletingAll(false);
+    admins.reload();
+  };
 
   const confirmDelete = async () => {
     try {
@@ -1064,7 +1072,10 @@ function AdminsPage() {
 
   return (
     <div>
-      <PageHeader title="Admins" desc={admins.loading ? "Loading..." : `${admins.data.length} admins`} action={<PrimaryBtn onClick={() => setShowAdd(true)}><span className="flex items-center gap-1.5"><Plus size={13} /> Add admin</span></PrimaryBtn>} />
+      <PageHeader title="Admins" desc={admins.loading ? "Loading..." : `${admins.data.length} admins`} action={<div className="flex gap-2">
+        {admins.data.length > 0 && <button onClick={() => setDeletingAll(true)} className="px-4 py-2 text-[12.5px] font-medium flex items-center gap-1.5" style={{ fontFamily: F.b, color: C.rust, border: `1px solid ${C.rust}`, borderRadius: 7 }}><Trash2 size={13} /> Delete all</button>}
+        <PrimaryBtn onClick={() => setShowAdd(true)}><span className="flex items-center gap-1.5"><Plus size={13} /> Add admin</span></PrimaryBtn>
+      </div>} />
 
       {admins.error && <ErrorBanner message={admins.error} onRetry={admins.reload} />}
       {actionError && <ErrorBanner message={actionError} onRetry={() => setActionError(null)} />}
@@ -1093,6 +1104,20 @@ function AdminsPage() {
       )}
 
       {pagesFor && <AdminPagesModal admin={pagesFor} onClose={() => setPagesFor(null)} onSaved={() => { setPagesFor(null); admins.reload(); }} />}
+      {deletingAll && (
+        <Modal title="Delete ALL admins" onClose={() => setDeletingAll(false)}>
+          <p className="text-[13px] mb-2" style={{ fontFamily: F.b, color: C.ink }}>
+            Delete all <b>{admins.data.length}</b> admins?
+          </p>
+          <p className="text-[12px] mb-4" style={{ fontFamily: F.b, color: C.rust }}>
+            This permanently removes every admin account and all their WhatsApp numbers, contacts, conversations, campaigns, automations and chatbots. Super Admin accounts are not affected. It cannot be undone.
+          </p>
+          <div className="flex gap-2">
+            <GhostBtn onClick={() => setDeletingAll(false)}>Cancel</GhostBtn>
+            <button onClick={confirmDeleteAll} className="px-4 py-2 text-[12.5px] font-medium text-white" style={{ fontFamily: F.b, background: C.rust, borderRadius: 7 }}>Delete all permanently</button>
+          </div>
+        </Modal>
+      )}
       {deleting && (
         <Modal title="Delete admin" onClose={() => setDeleting(null)}>
           <p className="text-[13px] mb-2" style={{ fontFamily: F.b, color: C.ink }}>
