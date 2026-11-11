@@ -353,6 +353,9 @@ function fmtDate(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
 }
+// WhatsApp sometimes hides a person's phone number; the app then keys the chat by WhatsApp's own id ("lid:...").
+const showPhone = (p) => (!p ? "—" : p.startsWith("lid:") ? "Phone hidden by WhatsApp" : p);
+
 function dayLabel(iso) {
   const d = new Date(iso);
   const start = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
@@ -1168,16 +1171,38 @@ function NumbersPage({ role, onOpenNumber }) {
           </div>
         </>
       )}
-      {assigning && <AssignNumberModal number={assigning} admins={admins.data} onClose={() => setAssigning(null)} onDone={() => { setAssigning(null); numbers.reload(); }} />}
+      {assigning && <AssignNumberModal number={assigning} admins={admins.data} reloadAdmins={admins.reload} onClose={() => setAssigning(null)} onDone={() => { setAssigning(null); numbers.reload(); }} />}
     </div>
   );
 }
 
-function AssignNumberModal({ number, admins, onClose, onDone }) {
-  const { token } = useAuth();
-  const [adminId, setAdminId] = useState(admins.some((a) => a.id === number.admin_id) ? number.admin_id : "");
+function AssignNumberModal({ number, admins, reloadAdmins, onClose, onDone }) {
+  const { token, userId, name: myName } = useAuth();
+  const [created, setCreated] = useState([]);
+  const options = [{ id: userId, name: `${myName} (me)` }, ...[...admins, ...created.filter((c) => !admins.some((a) => a.id === c.id))].filter((a) => a.id !== userId)];
+  const [adminId, setAdminId] = useState(options.some((o) => o.id === number.admin_id) ? number.admin_id : "");
+  const [creating, setCreating] = useState(admins.length === 0);
+  const [form, setForm] = useState({ name: "", email: "", password: "" });
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
+  const formOk = form.name.trim() && /\S+@\S+\.\S+/.test(form.email) && form.password.length >= 8;
+
+  const createAdmin = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const a = await callServer("/admins", { method: "POST", token, body: { name: form.name.trim(), email: form.email.trim(), phone: "", password: form.password, role: "admin" } });
+      setCreated((c) => [...c, a]);
+      setAdminId(a.id);
+      setCreating(false);
+      setForm({ name: "", email: "", password: "" });
+      reloadAdmins();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
   const save = async () => {
     setSaving(true);
     setError(null);
@@ -1190,16 +1215,33 @@ function AssignNumberModal({ number, admins, onClose, onDone }) {
       setSaving(false);
     }
   };
+  const chosen = options.find((o) => o.id === adminId);
   return (
     <Modal title="Assign number" onClose={onClose}>
       <div className="text-[12.5px] mb-3" style={{ fontFamily: F.b, color: C.ink }}><b>{number.display_name}</b> · <span style={{ fontFamily: F.m }}>{number.phone}</span></div>
-      <Field label="Assign to">
+      <Field label="Who handles this number's chats?">
         <select style={inputStyle} value={adminId} onChange={(e) => setAdminId(e.target.value)}>
-          <option value="" disabled>Choose an admin…</option>
-          {admins.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          <option value="" disabled>Choose someone…</option>
+          {options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
         </select>
       </Field>
-      <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.inkSoft }}>This number's chats and contacts move to the selected admin, who will then see them in their inbox. Currently: {number.admin_name || "nobody"}.</div>
+      <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.inkSoft }}>
+        {chosen ? <><b>{chosen.name}</b> will see this number's chats in their Inbox and can reply.</> : "They will see this number's chats in their Inbox and can reply."} Currently: {number.admin_name || "nobody"}.
+      </div>
+      {!creating ? (
+        <button type="button" onClick={() => setCreating(true)} className="text-[12px] font-medium mb-3" style={{ fontFamily: F.b, color: C.jade }}>+ Create a new admin</button>
+      ) : (
+        <div className="mb-3 px-3 py-3" style={{ border: `1px solid ${C.hairline}`, borderRadius: 8, background: C.white }}>
+          <div className="text-[12px] font-semibold mb-2" style={{ fontFamily: F.d, color: C.ink }}>{admins.length === 0 ? "No admins yet — create the first one" : "New admin"}</div>
+          <Field label="Full name"><input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+          <Field label="Email (their login)"><input style={inputStyle} type="email" autoComplete="off" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></Field>
+          <Field label="Temporary password"><input style={inputStyle} type="password" autoComplete="new-password" placeholder="At least 8 characters" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></Field>
+          <div className="flex gap-2">
+            <PrimaryBtn disabled={saving || !formOk} onClick={createAdmin}>{saving ? "Creating..." : "Create admin"}</PrimaryBtn>
+            {admins.length > 0 && <GhostBtn onClick={() => setCreating(false)}>Cancel</GhostBtn>}
+          </div>
+        </div>
+      )}
       {error && <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.rust }}>{error}</div>}
       <div className="flex gap-2 mt-4">
         <GhostBtn onClick={onClose}>Cancel</GhostBtn>
@@ -1385,16 +1427,10 @@ function AddAdminModal({ onClose, onAdded }) {
 }
 
 // ============================================================
-// INBOX — real conversations. With Twilio live, replies go out over WhatsApp,
+// INBOX — real conversations. Replies go out over WhatsApp,
 // incoming messages arrive via webhook, and the list refreshes on its own.
 // ============================================================
 const STICKERS = ["🎉", "😊", "👍", "❤️", "🙏", "😂", "🔥", "✅"];
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-function inServiceWindow(lastInboundAt) {
-  return !!lastInboundAt && Date.now() - new Date(lastInboundAt).getTime() < DAY_MS;
-}
-
 /** Delivery state of an outgoing message — WhatsApp-style ticks. */
 function StatusTick({ status }) {
   const t = { queued: [Clock, C.inkFaint, "Queued"], sent: [Check, C.inkFaint, "Sent"], delivered: [CheckCheck, C.inkFaint, "Delivered"],
@@ -1543,45 +1579,7 @@ function Bubble({ msg }) {
   );
 }
 
-/** Rows of {{1}}, {{2}}... values for a WhatsApp template. */
-function TemplateVariablesEditor({ vars, setVars }) {
-  return (
-    <div>
-      {vars.map((v, i) => (
-        <div key={i} className="flex items-center gap-2 mb-2">
-          <span className="text-[11.5px] shrink-0" style={{ fontFamily: F.m, color: C.inkSoft, width: 44 }}>{`{{${i + 1}}}`}</span>
-          <input style={inputStyle} value={v} placeholder={i === 0 ? "e.g. {{name}} or Rahul" : "value"} onChange={(e) => setVars(vars.map((x, j) => (j === i ? e.target.value : x)))} />
-          <button type="button" onClick={() => setVars(vars.filter((_, j) => j !== i))} title="Remove"><X size={14} color={C.inkSoft} /></button>
-        </div>
-      ))}
-      <button type="button" onClick={() => setVars([...vars, ""])} className="text-[11.5px] font-medium" style={{ fontFamily: F.b, color: C.jade }}>+ Add variable</button>
-    </div>
-  );
-}
-function varsToObject(vars) {
-  const o = {};
-  vars.forEach((v, i) => { if (v.trim()) o[String(i + 1)] = v.trim(); });
-  return Object.keys(o).length ? o : undefined;
-}
-
-function TemplateModal({ onClose, onSend }) {
-  const [sid, setSid] = useState("");
-  const [vars, setVars] = useState([""]);
-  const valid = /^HX[0-9a-fA-F]{32}$/.test(sid.trim());
-  return (
-    <Modal title="Send WhatsApp template" onClose={onClose} width={460}>
-      <div className="text-[11.5px] mb-3 px-3 py-2" style={{ fontFamily: F.b, color: C.inkSoft, background: C.panelDeep, borderRadius: 6 }}>
-        Templates are pre-approved messages — the only kind WhatsApp delivers when the customer hasn't written in the last 24 hours.
-        Paste the <b>template ID</b> (starts with HX) of an approved template.
-      </div>
-      <Field label="Content SID"><input style={inputStyle} placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" value={sid} onChange={(e) => setSid(e.target.value)} /></Field>
-      <Field label="Template variables"><TemplateVariablesEditor vars={vars} setVars={setVars} /></Field>
-      <div className="flex gap-2 mt-2"><GhostBtn onClick={onClose}>Cancel</GhostBtn><PrimaryBtn disabled={!valid} onClick={() => onSend({ type: "text", content_sid: sid.trim(), content_variables: varsToObject(vars) })}>Send template</PrimaryBtn></div>
-    </Modal>
-  );
-}
-
-/** Whether sending is live or in demo mode. Fetched once per session. */
+/** Whether sending is live. Fetched once per session. */
 let waStatusCache = null;
 function useWhatsAppStatus() {
   const { token } = useAuth();
@@ -1629,7 +1627,7 @@ function CustomerPanel({ contact }) {
       <div className="flex flex-col items-center py-4" style={{ borderBottom: `1px solid ${C.hairline}` }}>
         <div className="w-12 h-12 flex items-center justify-center text-[16px] font-semibold text-white mb-2" style={{ background: colorForId(contact.id), borderRadius: 9 }}>{initials(contact.name)}</div>
         <span className="text-[13.5px] font-medium" style={{ fontFamily: F.b, color: C.ink }}>{contact.name}</span>
-        <span className="text-[11.5px]" style={{ fontFamily: F.m, color: C.inkSoft }}>{contact.phone}</span>
+        <span className="text-[11.5px]" style={{ fontFamily: F.m, color: C.inkSoft }}>{showPhone(contact.phone)}</span>
         {full?.opted_out && <span className="text-[10.5px] font-medium px-2 py-0.5 mt-2" style={{ fontFamily: F.b, color: C.rust, background: C.rustSoft, borderRadius: 5 }}>Opted out (STOP)</span>}
       </div>
       <div className="flex-1 overflow-y-auto px-4 py-3.5 space-y-2.5">
@@ -1666,7 +1664,7 @@ function InboxPage({ numberId, onNumberChange }) {
   const wa = useWhatsAppStatus();
   const live = !!wa?.live;
   const [filter, setFilter] = useState("all");
-  // Refreshes every 5 s so messages arriving via the Twilio webhook show up.
+  // Refreshes every 5 s so new messages show up.
   const conversations = useServerList("/inbox/conversations", { params: { status: filter === "all" ? undefined : filter, number_id: numberId || undefined }, refreshMs: 5000 });
   const numbers = useServerList("/numbers", { refreshMs: 15000 });
   const totalUnread = numbers.data.reduce((sum, n) => sum + (n.unread || 0), 0);
@@ -1674,7 +1672,7 @@ function InboxPage({ numberId, onNumberChange }) {
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [sendError, setSendError] = useState(null);
-  const [composerMode, setComposerMode] = useState(null); // null | "voice" | "stickers" | "template"
+  const [composerMode, setComposerMode] = useState(null); // null | "voice" | "stickers" | "templates"
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [pendingFile, setPendingFile] = useState(null); // a file picked from the device, waiting to be sent
@@ -1723,7 +1721,7 @@ function InboxPage({ numberId, onNumberChange }) {
       const msg = await callServer(`/inbox/conversations/${activeConvId}/messages`, { method: "POST", token, body: payload });
       const fresh = await callServer(`/inbox/conversations/${activeConvId}`, { token });
       setDetail(fresh);
-      if (payload.type === "text" && !payload.content_sid) setDraft("");
+      if (payload.type === "text") setDraft("");
       if (msg.status === "failed") setSendError(`WhatsApp rejected the message${msg.error_message ? `: ${msg.error_message}` : ""}`);
       conversations.refresh();
     } catch (err) {
@@ -1777,13 +1775,25 @@ function InboxPage({ numberId, onNumberChange }) {
   };
 
   const statusColor = { needs_human: C.rust, bot: C.amber, human: C.jade };
-  const windowOpen = detail && inServiceWindow(detail.last_inbound_at);
 
   if (conversations.error) return <ErrorBanner message={conversations.error} onRetry={conversations.reload} />;
 
   return (
     <div className={`relay-inbox flex${mobileThreadOpen ? " relay-inbox-show-thread" : ""}`} style={{ height: "calc(100vh - 108px)", background: C.panel, border: `1px solid ${C.hairline}`, borderRadius: 8, overflow: "hidden" }}>
       <div className="relay-inbox-list flex flex-col shrink-0" style={{ width: 300, borderRight: `1px solid ${C.hairline}` }}>
+        {numberId && numbers.data.find((n) => n.id === numberId) && (() => {
+          const n = numbers.data.find((x) => x.id === numberId);
+          return (
+            <div className="px-3 py-3 flex items-center gap-2.5" style={{ borderBottom: `1px solid ${C.hairline}`, background: C.panelDeep }}>
+              <button type="button" onClick={() => onNumberChange(null)} className="p-1 shrink-0" aria-label="Back to all chats" title="Back to all chats"><ChevronLeft size={17} color={C.inkSoft} /></button>
+              <div className="w-9 h-9 flex items-center justify-center text-[12px] font-semibold text-white shrink-0" style={{ background: colorForId(n.id), borderRadius: 9 }}>{initials(n.display_name)}</div>
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-semibold truncate" style={{ fontFamily: F.d, color: C.ink }} data-testid="number-header">{n.display_name}</div>
+                <div className="text-[10.5px] truncate" style={{ fontFamily: F.m, color: C.inkSoft }}>{n.phone} · {n.admin_name ? `handled by ${n.admin_name}` : "not assigned"}</div>
+              </div>
+            </div>
+          );
+        })()}
         <div className="px-3.5 pt-3.5">
           <select value={numberId || ""} onChange={(e) => onNumberChange(e.target.value || null)} aria-label="Filter by WhatsApp number" style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }}>
             <option value="">All numbers{totalUnread ? ` · ${totalUnread} unread` : ""}</option>
@@ -1813,7 +1823,7 @@ function InboxPage({ numberId, onNumberChange }) {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span className="w-[6px] h-[6px] rounded-full shrink-0" style={{ background: statusColor[c.status] }} />
-                    <span className="text-[11.5px] truncate" style={{ fontFamily: F.b, color: C.inkSoft }}>{c.contact.phone}</span>
+                    <span className="text-[11.5px] truncate" style={{ fontFamily: F.b, color: C.inkSoft }}>{showPhone(c.contact.phone)}</span>
                     {!numberId && <span className="text-[9.5px] px-1.5 py-0.5 shrink-0 truncate text-white" style={{ fontFamily: F.b, background: colorForId(c.whatsapp_number_id), borderRadius: 4, maxWidth: 96 }} title={`via ${c.whatsapp_number_name || c.whatsapp_number_phone}`}>{c.whatsapp_number_name || c.whatsapp_number_phone}</span>}
                   </div>
                 </div>
@@ -1835,7 +1845,7 @@ function InboxPage({ numberId, onNumberChange }) {
                 <div className="w-8 h-8 flex items-center justify-center text-[11px] font-semibold text-white" style={{ background: colorForId(detail.contact.id), borderRadius: 7 }}>{initials(detail.contact.name)}</div>
                 <div>
                   <div className="text-[13px] font-medium" style={{ fontFamily: F.b, color: C.ink }}>{detail.contact.name}</div>
-                  <div className="text-[11px]" style={{ fontFamily: F.m, color: C.inkSoft }}>{detail.contact.phone} · via {detail.whatsapp_number_name || detail.whatsapp_number_phone}</div>
+                  <div className="text-[11px]" style={{ fontFamily: F.m, color: C.inkSoft }}>{showPhone(detail.contact.phone)} · via {detail.whatsapp_number_name || detail.whatsapp_number_phone}</div>
                 </div>
               </div>
               {detail.status === "needs_human" && <span className="text-[10.5px] font-medium px-2 py-1" style={{ fontFamily: F.b, color: C.rust, background: C.rustSoft, borderRadius: 5 }}>Needs human</span>}
@@ -1854,12 +1864,6 @@ function InboxPage({ numberId, onNumberChange }) {
               })}
             </div>
             <div className="relay-thread-composer px-4 py-3" style={{ borderTop: `1px solid ${C.hairline}` }}>
-              {live && !windowOpen && (
-                <div className="flex items-center justify-between gap-2 px-3 py-2 mb-2 text-[11.5px]" style={{ fontFamily: F.b, color: C.ink, background: C.amberSoft, borderRadius: 7 }}>
-                  <span><b>24-hour window closed.</b> {detail.contact.name} hasn't messaged in the last 24h, so WhatsApp only delivers an approved template.</span>
-                  <button onClick={() => setComposerMode("template")} className="shrink-0 text-[11.5px] font-medium px-2.5 py-1 text-white" style={{ background: C.amber, borderRadius: 6 }}>Send template</button>
-                </div>
-              )}
               {sendError && <div className="text-[11.5px] mb-2" style={{ fontFamily: F.b, color: C.rust }}>{sendError}</div>}
               <input ref={fileInputRef} type="file" data-testid="attachment-input" style={{ display: "none" }}
                 onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) setPendingFile(f); }} />
@@ -1886,7 +1890,7 @@ function InboxPage({ numberId, onNumberChange }) {
                     <IconBtn icon={Paperclip} onClick={() => pickFile("image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip")} />
                     <IconBtn icon={ImageIcon} onClick={() => pickFile("image/*")} />
                     <IconBtn icon={Video} onClick={() => pickFile("video/*")} />
-                    <IconBtn icon={FileText} onClick={() => setComposerMode("template")} active={composerMode === "template"} />
+                    <IconBtn icon={FileText} onClick={() => setComposerMode(composerMode === "templates" ? null : "templates")} active={composerMode === "templates"} />
                     <IconBtn icon={Smile} onClick={() => setComposerMode(composerMode === "stickers" ? null : "stickers")} active={composerMode === "stickers"} />
                     <IconBtn icon={Mic} onClick={() => setComposerMode("voice")} />
                     <textarea value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Write a reply..." rows={1}
@@ -1907,7 +1911,7 @@ function InboxPage({ numberId, onNumberChange }) {
       </div>
 
       {detail && <CustomerPanel key={detail.contact.id} contact={detail.contact} />}
-      {composerMode === "template" && <TemplateModal onClose={() => setComposerMode(null)} onSend={sendMessage} />}
+      {composerMode === "templates" && detail && <TemplatePicker onClose={() => setComposerMode(null)} onPick={(t) => { setDraft(fillName(t.text, detail.contact.name)); setComposerMode(null); }} />}
     </div>
   );
 }
@@ -2144,7 +2148,7 @@ function CrmPage() {
             {result.items.map((c) => (
               <tr key={c.id}>
                 <Td><button onClick={() => setSelected(c)} className="font-medium" style={{ color: C.ink }}>{c.name}</button></Td>
-                <Td mono>{c.phone}</Td>
+                <Td mono>{showPhone(c.phone)}</Td>
                 <Td><span className="text-[11px] font-medium px-2 py-0.5" style={{ fontFamily: F.b, color: statusColor[c.status], background: C.panelDeep, borderRadius: 5 }}>{c.status}</span></Td>
                 <Td><div className="flex gap-1">{c.opted_out && <span className="text-[10px] px-1.5 py-0.5" style={{ fontFamily: F.b, color: C.rust, background: C.rustSoft, borderRadius: 4 }}>Opted out</span>}{(c.tags || []).slice(0, 2).map((t) => <span key={t} className="text-[10px] px-1.5 py-0.5" style={{ fontFamily: F.b, color: C.jade, background: C.jadeSoft, borderRadius: 4 }}>{t}</span>)}</div></Td>
                 <Td>{fmtDate(c.last_contact_at)}</Td>
@@ -2166,7 +2170,7 @@ function CrmPage() {
         <Modal title={selected.name} onClose={() => setSelected(null)} width={440}>
           <div className="flex items-center gap-3 mb-4">
             <div className="w-11 h-11 flex items-center justify-center text-[14px] font-semibold text-white" style={{ background: colorForId(selected.id), borderRadius: 9 }}>{initials(selected.name)}</div>
-            <div><div className="text-[13px] font-medium" style={{ fontFamily: F.b, color: C.ink }}>{selected.name}</div><div className="text-[11.5px]" style={{ fontFamily: F.m, color: C.inkSoft }}>{selected.phone}</div></div>
+            <div><div className="text-[13px] font-medium" style={{ fontFamily: F.b, color: C.ink }}>{selected.name}</div><div className="text-[11.5px]" style={{ fontFamily: F.m, color: C.inkSoft }}>{showPhone(selected.phone)}</div></div>
           </div>
           {[["Email", selected.email || "—"], ["City", selected.city || "—"], ["Status", selected.status], ["Source", selected.source || "—"], ["WhatsApp", selected.opted_out ? "Opted out (STOP)" : "Subscribed"], ["Last Contact", fmtDate(selected.last_contact_at)], ["Created", fmtDate(selected.created_at)]].map(([k, v]) => (
             <div key={k} className="flex items-center justify-between py-1.5" style={{ borderBottom: `1px solid ${C.hairlineSoft}` }}>
@@ -2194,11 +2198,11 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
   const [form, setForm] = useState({
     name: "", whatsapp_number_id: numbers[0]?.id || "",
     audienceMode: "all", status: "Replied", tag: "",
-    useTemplate: false, message_type: "text", message_text: "", media_url: "", content_sid: "",
+    message_type: "text", message_text: "", media_url: "",
     listText: "", listConsent: false, listTag: null, listResult: null,
   });
   const [listBusy, setListBusy] = useState(false);
-  const [vars, setVars] = useState([""]);
+  const [showTemplates, setShowTemplates] = useState(false);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -2237,9 +2241,7 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
     return () => { cancelled = true; clearTimeout(t); };
   }, [form.whatsapp_number_id, filterKey, token]);
 
-  const messageOk = form.useTemplate
-    ? /^HX[0-9a-fA-F]{32}$/.test(form.content_sid.trim())
-    : form.message_type === "text" ? !!form.message_text.trim() : /^https:\/\/\S+$/.test(form.media_url.trim());
+  const messageOk = form.message_type === "text" ? !!form.message_text.trim() : /^https:\/\/\S+$/.test(form.media_url.trim());
   const listPending = form.audienceMode === "list" && !form.listTag;
   const shownPreview = listPending ? null : preview;
   const canNext = [!!form.name.trim(), !!form.whatsapp_number_id && !listPending && (preview?.recipients ?? 0) > 0, messageOk, true][step];
@@ -2251,11 +2253,9 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
     try {
       const body = {
         name: form.name.trim(), whatsapp_number_id: form.whatsapp_number_id, audience_filter: audienceFilter,
-        message_type: form.useTemplate ? "text" : form.message_type,
-        message_text: form.useTemplate ? null : form.message_text.trim() || null,
-        media_url: !form.useTemplate && form.message_type !== "text" ? form.media_url.trim() : null,
-        content_sid: form.useTemplate ? form.content_sid.trim() : null,
-        content_variables: form.useTemplate ? varsToObject(vars) || null : null,
+        message_type: form.message_type,
+        message_text: form.message_text.trim() || null,
+        media_url: form.message_type !== "text" ? form.media_url.trim() : null,
       };
       const created = await callServer("/campaigns", { method: "POST", token, body });
       await callServer(`/campaigns/${created.id}/launch`, { method: "POST", token });
@@ -2312,7 +2312,7 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
           {radio("tag", "Contacts with a tag")}
           {form.audienceMode === "tag" && <input style={{ ...inputStyle, marginBottom: 10 }} placeholder="e.g. VIP" value={form.tag} onChange={(e) => set({ tag: e.target.value })} />}
           <label className="flex items-center gap-2 text-[12.5px] mb-2 cursor-pointer" style={{ fontFamily: F.b, color: C.ink }}>
-            <input type="radio" checked={form.audienceMode === "list"} onChange={() => set({ audienceMode: "list", useTemplate: live ? true : form.useTemplate })} /> Paste numbers / upload a list
+            <input type="radio" checked={form.audienceMode === "list"} onChange={() => set({ audienceMode: "list" })} /> Paste numbers / upload a list
           </label>
           {form.audienceMode === "list" && (
             <div className="mb-2">
@@ -2340,33 +2340,19 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
 
       {step === 2 && (
         <>
-          <div className="flex gap-1.5 mb-3">
-            {[[false, "Write a message"], [true, "Use approved template"]].map(([v, l]) => (
-              <button key={l} type="button" onClick={() => set({ useTemplate: v })} className="text-[11.5px] px-3 py-1.5 font-medium" style={{ fontFamily: F.b, borderRadius: 6, color: form.useTemplate === v ? "white" : C.inkSoft, background: form.useTemplate === v ? C.ink : C.panel, border: `1px solid ${form.useTemplate === v ? C.ink : C.hairline}` }}>{l}</button>
-            ))}
-          </div>
-          {!form.useTemplate ? (
-            <>
               <Field label="Type">
                 <select style={inputStyle} value={form.message_type} onChange={(e) => set({ message_type: e.target.value })}>
                   <option value="text">Text</option><option value="image">Image + caption</option><option value="video">Video + caption</option>
                 </select>
               </Field>
               {form.message_type !== "text" && <Field label="Public file link (https)"><input style={inputStyle} placeholder="https://yourdomain.com/offer.jpg" value={form.media_url} onChange={(e) => set({ media_url: e.target.value })} /></Field>}
+              <button type="button" onClick={() => setShowTemplates(true)} className="text-[12px] font-medium mb-2" style={{ fontFamily: F.b, color: C.jade }}>Use a saved template</button>
+              {showTemplates && <TemplatePicker onClose={() => setShowTemplates(false)} onPick={(t) => { set({ message_text: t.text }); setShowTemplates(false); }} />}
               <Field label={form.message_type === "text" ? "Message" : "Caption (optional)"}>
                 <textarea style={{ ...inputStyle, minHeight: 90 }} value={form.message_text} onChange={(e) => set({ message_text: e.target.value })} placeholder="Hi {{name}}, our Diwali sale is live — 20% off till Sunday!" />
               </Field>
               <div className="text-[11px] mb-1" style={{ fontFamily: F.b, color: C.inkFaint }}>Use <code>{"{{name}}"}</code> for the contact's first name.</div>
-              {live && form.audienceMode === "list" && <div className="text-[11.5px] px-3 py-2 mt-2" style={{ fontFamily: F.b, color: "white", background: C.rust, borderRadius: 6 }}><b>These numbers probably never messaged you</b>, so WhatsApp will reject a normal message to them. Switch to <b>Use approved template</b>.</div>}
-              {live && form.audienceMode !== "list" && <div className="text-[11px] px-3 py-2 mt-2" style={{ fontFamily: F.b, color: C.ink, background: C.amberSoft, borderRadius: 6 }}>Free-form messages only reach people who messaged you in the last 24 hours (sandbox: people who joined it). To reach everyone, use an approved template.</div>}
-            </>
-          ) : (
-            <>
-              <Field label="Template ID"><input style={inputStyle} placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" value={form.content_sid} onChange={(e) => set({ content_sid: e.target.value })} /></Field>
-              <Field label="Template variables"><TemplateVariablesEditor vars={vars} setVars={setVars} /></Field>
-              <div className="text-[11px]" style={{ fontFamily: F.b, color: C.inkFaint }}>You can use <code>{"{{name}}"}</code> as a value too, e.g. {"{{1}}"} = {"{{name}}"}.</div>
-            </>
-          )}
+              <div className="text-[11px] px-3 py-2 mt-2" style={{ fontFamily: F.b, color: C.ink, background: C.amberSoft, borderRadius: 6 }}>Messages go out from a normal WhatsApp account, one by one. Only message people who expect to hear from you, and keep the pace steady to protect the number.</div>
         </>
       )}
 
@@ -2375,7 +2361,7 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
           {[["Name", form.name], ["From", number ? `${number.phone} — ${number.display_name}` : "—"],
             ["Audience", form.audienceMode === "all" ? "All contacts" : form.audienceMode === "status" ? `Status: ${form.status}` : form.audienceMode === "list" ? `Pasted list (${form.listTag})` : `Tag: ${form.tag || "—"}`],
             ["Recipients", shownPreview ? String(shownPreview.recipients) : "—"],
-            ["Message", form.useTemplate ? `Template ${form.content_sid}` : form.message_type === "text" ? form.message_text : `${form.message_type}: ${form.media_url}`],
+            ["Message", form.message_type === "text" ? form.message_text : `${form.message_type}: ${form.media_url}`],
             ["Delivery", `Real WhatsApp · ~${wa.send_interval_seconds}s between messages`],
           ].map(([k, v]) => (
             <div key={k} className="flex items-start justify-between gap-4 py-1.5" style={{ borderBottom: `1px solid ${C.hairlineSoft}` }}>
@@ -2432,7 +2418,7 @@ function CampaignsPage() {
             const pct = c.recipients ? Math.min(100, Math.round((done / c.recipients) * 100)) : 0;
             return (
               <tr key={c.id}>
-                <Td><div className="font-medium">{c.name}</div><div className="text-[10.5px]" style={{ color: C.inkFaint }}>{c.content_sid ? "Template" : c.message_type} · {fmtDate(c.created_at)}</div></Td>
+                <Td><div className="font-medium">{c.name}</div><div className="text-[10.5px]" style={{ color: C.inkFaint }}>{c.message_type} · {fmtDate(c.created_at)}</div></Td>
                 <Td>
                   <div className="flex items-center gap-2">
                     <div style={{ width: 70, height: 5, background: C.hairlineSoft, borderRadius: 3 }}><div style={{ width: `${pct}%`, height: 5, background: c.status === "Failed" ? C.rust : C.jade, borderRadius: 3, transition: "width .4s" }} /></div>
@@ -2477,6 +2463,106 @@ function FlowNode({ label, sub, color, icon: Icon }) {
 }
 function FlowArrow() { return <div className="flex justify-center py-1"><ArrowDown size={14} color={C.inkFaint} /></div>; }
 
+const isMessageStep = (n) => !!n && n.type === "action" && !/human|transfer|assign/i.test(n.label || "");
+const fillName = (text, fullName) => {
+  const first = (fullName || "").split(" ")[0] || "there";
+  return (text || "").replace(/\{\{\s*name\s*\}\}/g, first).replace(/\{\{\s*full_name\s*\}\}/g, fullName || first);
+};
+const STARTER_TEMPLATES = [
+  { name: "Greeting", text: "Hi {{name}}! Thanks for reaching out. How can we help you today?" },
+  { name: "Follow-up", text: "Hi {{name}}, just checking in. Is there anything we can help you with?" },
+  { name: "Thank you", text: "Thank you {{name}}! Let us know if you need anything else." },
+];
+
+/** Your saved messages. They are sent as ordinary WhatsApp messages. Pass onPick to choose one. */
+function TemplatePicker({ onClose, onPick }) {
+  const { token } = useAuth();
+  const list = useServerList("/templates");
+  const [editing, setEditing] = useState(null); // null | "new" | template
+  const [form, setForm] = useState({ name: "", text: "" });
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const shown = list.data.filter((t) => `${t.name} ${t.text}`.toLowerCase().includes(query.toLowerCase()));
+
+  const edit = (t) => { setEditing(t || "new"); setForm(t ? { name: t.name, text: t.text } : { name: "", text: "" }); setError(null); };
+  const run = async (fn) => {
+    setBusy(true);
+    setError(null);
+    try { await fn(); list.reload(); } catch (err) { setError(err.message); } finally { setBusy(false); }
+  };
+  const save = () => run(async () => {
+    const body = { name: form.name.trim(), text: form.text.trim() };
+    if (editing === "new") await callServer("/templates", { method: "POST", token, body });
+    else await callServer(`/templates/${editing.id}`, { method: "PATCH", token, body });
+    setEditing(null);
+  });
+  const remove = (t) => run(() => callServer(`/templates/${t.id}`, { method: "DELETE", token }));
+  const addStarters = () => run(async () => { for (const t of STARTER_TEMPLATES) await callServer("/templates", { method: "POST", token, body: t }); });
+
+  return (
+    <Modal title="Message templates" onClose={onClose} width={560}>
+      <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.inkSoft }}>Saved messages you can reuse. Use <code>{"{{name}}"}</code> for the customer's first name. They are sent as normal WhatsApp messages, no approval needed.</div>
+      {editing ? (
+        <div>
+          <Field label="Template name"><input style={inputStyle} value={form.name} placeholder="e.g. Opening hours" onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+          <Field label="Message"><textarea style={{ ...inputStyle, minHeight: 110, resize: "vertical" }} value={form.text} placeholder="Hi {{name}}, we are open 9 to 6, Monday to Saturday." onChange={(e) => setForm({ ...form, text: e.target.value })} /></Field>
+          {error && <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.rust }}>{error}</div>}
+          <div className="flex gap-2"><GhostBtn onClick={() => setEditing(null)}>Back</GhostBtn><PrimaryBtn disabled={busy || !form.name.trim() || !form.text.trim()} onClick={save}>{busy ? "Saving..." : "Save template"}</PrimaryBtn></div>
+        </div>
+      ) : (
+        <>
+          <div className="flex gap-2 mb-3">
+            <input style={{ ...inputStyle, flex: 1 }} placeholder="Search templates..." value={query} onChange={(e) => setQuery(e.target.value)} />
+            <PrimaryBtn onClick={() => edit(null)}><span className="flex items-center gap-1.5"><Plus size={13} /> New template</span></PrimaryBtn>
+          </div>
+          {list.error && <ErrorBanner message={list.error} onRetry={list.reload} />}
+          {!list.loading && list.data.length === 0 && (
+            <div className="text-center py-6">
+              <div className="text-[12.5px] mb-3" style={{ fontFamily: F.b, color: C.inkSoft }}>No templates yet. Create your first one, or start with three common ones.</div>
+              <GhostBtn onClick={addStarters}>{busy ? "Adding..." : "Add 3 starter templates"}</GhostBtn>
+            </div>
+          )}
+          <div className="flex flex-col gap-2" style={{ maxHeight: 340, overflowY: "auto" }}>
+            {shown.map((t) => (
+              <div key={t.id} className="px-3 py-2.5" style={{ border: `1px solid ${C.hairline}`, borderRadius: 8, background: C.white }}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[12.5px] font-semibold truncate" style={{ fontFamily: F.b, color: C.ink }}>{t.name}</span>
+                  <div className="flex items-center gap-3 shrink-0">
+                    {onPick && <button type="button" onClick={() => onPick(t)} className="text-[11.5px] font-semibold px-2.5 py-1 text-white" style={{ fontFamily: F.b, background: C.jade, borderRadius: 6 }}>Use</button>}
+                    <button type="button" onClick={() => edit(t)} className="text-[11.5px]" style={{ fontFamily: F.b, color: C.inkSoft }}>Edit</button>
+                    <button type="button" onClick={() => remove(t)} disabled={busy} className="text-[11.5px]" style={{ fontFamily: F.b, color: C.rust }}>Delete</button>
+                  </div>
+                </div>
+                <div className="text-[11.5px] mt-1" style={{ fontFamily: F.b, color: C.inkSoft, whiteSpace: "pre-wrap" }}>{t.text.length > 220 ? t.text.slice(0, 220) + "…" : t.text}</div>
+              </div>
+            ))}
+          </div>
+          {error && <div className="text-[11.5px] mt-3" style={{ fontFamily: F.b, color: C.rust }}>{error}</div>}
+        </>
+      )}
+    </Modal>
+  );
+}
+
+/** The text of a message step, shown right on the flow with the buttons to write it. */
+function MessageCard({ node, onEdit, defaults }) {
+  const variants = (node.messageVariants || []).filter((v) => v && v.trim());
+  const d = node.replyDelay || defaults || { min: 15, max: 30 };
+  const waitText = Number(d.max) <= 0 ? "Sends immediately" : Number(d.min) === Number(d.max) ? `Waits ${d.min} s, then sends` : `Waits a random ${d.min}–${d.max} s, then sends`;
+  return (
+    <div className="mt-1.5 px-3 py-2 w-full" style={{ maxWidth: 340, background: C.white, border: `1px solid ${C.hairline}`, borderRadius: 8 }} data-testid="message-card">
+      <div className="text-[10.5px] mb-1" style={{ fontFamily: F.b, color: C.inkFaint }}>{variants.length > 1 ? `${variants.length} message variants` : "Message sent to the customer"}</div>
+      <div className="text-[12px] leading-snug" style={{ fontFamily: F.b, color: variants.length ? C.ink : C.inkFaint, whiteSpace: "pre-wrap" }}>{variants.length ? (variants[0].length > 160 ? variants[0].slice(0, 160) + "…" : variants[0]) : "No message written yet — a standard one is sent. Write your own."}</div>
+      <div className="text-[10.5px] mt-1.5" style={{ fontFamily: F.m, color: C.inkFaint }} data-testid="delay-hint">{waitText}</div>
+      <div className="flex gap-3 mt-2">
+        <button type="button" onClick={() => onEdit(node)} className="text-[11.5px] font-medium" style={{ fontFamily: F.b, color: C.jade }}>Write message</button>
+        <button type="button" onClick={() => onEdit(node, { addVariant: true })} className="text-[11.5px] font-medium" style={{ fontFamily: F.b, color: C.jade }}>+ Add variant</button>
+      </div>
+    </div>
+  );
+}
+
 function NewAutomationModal({ onClose, onCreated }) {
   const { token } = useAuth();
   const templates = useServerList("/automations/templates");
@@ -2507,8 +2593,9 @@ function NewAutomationModal({ onClose, onCreated }) {
       <div className="flex flex-col gap-2 mb-3">
         {templates.data.map((t) => (
           <button key={t.id} type="button" onClick={() => setPicked(t.id)} className="text-left px-3 py-2.5" style={{ border: `1px solid ${picked === t.id ? C.jade : C.hairline}`, borderRadius: 8, background: picked === t.id ? C.jadeSoft : C.white }}>
-            <div className="text-[12.5px] font-semibold" style={{ fontFamily: F.b, color: C.ink }}>{t.name}</div>
+            <div className="text-[12.5px] font-semibold" style={{ fontFamily: F.b, color: C.ink }}>{t.name}{t.id === "welcome_followup" && <span className="ml-2 text-[10px] font-medium px-1.5 py-0.5" style={{ color: C.jade, background: C.jadeSoft, borderRadius: 4 }}>Standard flow</span>}</div>
             <div className="text-[11.5px] mt-0.5" style={{ fontFamily: F.b, color: C.inkSoft }}>{t.description}</div>
+            <div className="text-[10.5px] mt-1" style={{ fontFamily: F.b, color: C.jade }}>Starts when: {t.starts_when}</div>
             <div className="text-[10.5px] mt-1.5" style={{ fontFamily: F.m, color: C.inkFaint }}>{t.steps.join("  →  ")}</div>
           </button>
         ))}
@@ -2525,6 +2612,8 @@ function NewAutomationModal({ onClose, onCreated }) {
 
 function AutomationsPage() {
   const { token } = useAuth();
+  const wa = useWhatsAppStatus();
+  const replyDefaults = wa?.reply_delay || { min: 15, max: 30 };
   const automations = useServerList("/automations");
   const [showNew, setShowNew] = useState(false);
   const [openBuilder, setOpenBuilder] = useState(null);
@@ -2536,8 +2625,13 @@ function AutomationsPage() {
     sub: "",
     messageVariants: [""],
     assignmentMode: "round_robin",
+    delayMin: "15",
+    delayMax: "30",
   });
   const [nameDraft, setNameDraft] = useState("");
+  const [triggerType, setTriggerType] = useState("new_customer");
+  const [keywordsText, setKeywordsText] = useState("");
+  const [pickerFor, setPickerFor] = useState(null); // index of the variant that is getting a saved template
 
   const defaultNodes = [
     { id: "trigger", type: "trigger", label: "New customer", sub: "Trigger", icon: "Zap", color: C.blue },
@@ -2563,6 +2657,8 @@ function AutomationsPage() {
         }))
       : defaultNodes;
     setFlowNodes(merged);
+    setTriggerType(automation.trigger_type || "new_customer");
+    setKeywordsText(((automation.trigger_config || {}).keywords || []).join(", "));
     setNameDraft(automation.name || "");
     setOpenBuilder(automation);
   };
@@ -2590,6 +2686,8 @@ function AutomationsPage() {
         token,
         body: {
           name: nameDraft.trim() || openBuilder.name,
+          trigger_type: triggerType,
+          trigger_config: triggerType === "keyword" ? { keywords: parseKeywords(keywordsText) } : null,
           flow: {
             nodes: flowNodes.map(({ color: _color, ...node }) => node),
           },
@@ -2606,19 +2704,26 @@ function AutomationsPage() {
 
   const iconMap = { Zap, Send, Clock, GitBranch, UserCog };
 
-  const editNode = (node) => {
-  setEditingNode(node.id);
+  const editNode = (node, opts = {}) => {
+    setEditingNode(node.id);
+    const existing = Array.isArray(node.messageVariants) && node.messageVariants.length ? node.messageVariants : [""];
+    setEditForm({
+      label: node.label || "",
+      sub: node.sub || "",
+      messageVariants: opts.addVariant ? [...existing, ""] : existing,
+      assignmentMode: node.assignmentMode || "round_robin",
+      delayMin: String(node.replyDelay?.min ?? replyDefaults.min),
+      delayMax: String(node.replyDelay?.max ?? replyDefaults.max),
+    });
+  };
 
-  setEditForm({
-    label: node.label || "",
-    sub: node.sub || "",
-    messageVariants:
-      Array.isArray(node.messageVariants) && node.messageVariants.length
-        ? node.messageVariants
-        : [""],
-    assignmentMode: node.assignmentMode || "round_robin",
-  });
-};
+  const parseKeywords = (text) => text.split(",").map((k) => k.trim()).filter(Boolean);
+  const applyTrigger = (type, text) => {
+    setTriggerType(type);
+    setKeywordsText(text);
+    const kws = parseKeywords(text);
+    setFlowNodes((nodes) => nodes.map((n) => (n.type === "trigger" ? { ...n, label: type === "keyword" ? "Message contains keywords" : "New customer", sub: type === "keyword" ? (kws.join(", ") || "add keywords") : "Trigger" } : n)));
+  };
 
   const saveNode = () => {
     setFlowNodes((nodes) =>
@@ -2630,6 +2735,13 @@ function AutomationsPage() {
               sub: editForm.sub,
               messageVariants: editForm.messageVariants,
               assignmentMode: editForm.assignmentMode,
+              ...(() => {
+                if (!isMessageStep(n) && !/message|whatsapp/i.test(editForm.label)) return {};
+                const lo = Math.max(0, Number(editForm.delayMin) || 0);
+                const hi = Math.max(lo, Number(editForm.delayMax) || 0);
+                // only stored when it differs from the default, so changing the default later still applies
+                return lo === Number(replyDefaults.min) && hi === Number(replyDefaults.max) ? { replyDelay: undefined } : { replyDelay: { min: lo, max: hi } };
+              })(),
             }
           : n
       )
@@ -2649,9 +2761,27 @@ function AutomationsPage() {
           </div>
         } />
 
+        {openBuilder.status !== "Running" && (
+          <div className="flex items-center justify-between gap-3 text-[12px] mb-3 px-3.5 py-2.5" style={{ fontFamily: F.b, color: C.ink, background: C.amberSoft, borderRadius: 8 }}>
+            <span><b>Not active yet.</b> Write your messages below, then press <b>Activate</b>. It starts working on the next matching message.</span>
+            <button type="button" onClick={() => toggleStatus(openBuilder)} className="shrink-0 text-[11.5px] font-semibold px-3 py-1.5 text-white" style={{ background: C.jade, borderRadius: 6 }}>Activate</button>
+          </div>
+        )}
         <div className="mb-4" style={{ background: C.panel, border: `1px solid ${C.hairline}`, borderRadius: 8 }}>
           <div className="px-4 py-3" style={{ borderBottom: `1px solid ${C.hairline}` }}>
             <Field label="Automation name"><input style={inputStyle} value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} /></Field>
+            <Field label="Starts when">
+              <select style={inputStyle} value={triggerType} onChange={(e) => applyTrigger(e.target.value, keywordsText)} data-testid="trigger-select">
+                <option value="new_customer">A new customer writes to you for the first time</option>
+                <option value="keyword">An incoming message contains certain words</option>
+              </select>
+            </Field>
+            {triggerType === "keyword" && (
+              <Field label="Keywords (separate with commas)">
+                <input style={inputStyle} value={keywordsText} placeholder="price, pricing, catalogue" onChange={(e) => applyTrigger("keyword", e.target.value)} data-testid="keywords-input" />
+                <div className="text-[11px] mt-1" style={{ fontFamily: F.b, color: C.inkFaint }}>Whole words, any capitals. Each chat is answered at most once a day.</div>
+              </Field>
+            )}
           </div>
           <div className="flex flex-col items-center py-6 px-3">
             {flowNodes.map((node, index) => {
@@ -2661,16 +2791,19 @@ function AutomationsPage() {
                 <React.Fragment key={node.id}>
                   {index > 0 && <FlowArrow />}
                   {isBranch ? null : (
+                    <div className="flex flex-col items-center">
                     <div className="relay-flow-edit-row flex items-center gap-2">
                       <FlowNode label={node.label} sub={node.sub} color={node.color} icon={Icon} />
                       <button type="button" onClick={() => editNode(node)} className="p-2 shrink-0" title="Edit this step" aria-label={`Edit ${node.label}`} style={{ border: `1px solid ${C.hairline}`, borderRadius: 7, background: C.white }}><Pencil size={13} color={C.inkSoft} /></button>
+                    </div>
+                    {isMessageStep(node) && <MessageCard node={node} onEdit={editNode} defaults={replyDefaults} />}
                     </div>
                   )}
                   {node.id === "condition" && (
                     <div className="relay-flow-branches flex gap-10 mt-1">
                       {flowNodes.filter((n) => n.id === "yes" || n.id === "no").map((branch) => {
                         const BIcon = iconMap[branch.icon] || Send;
-                        return <div key={branch.id} className="flex flex-col items-center"><span className="text-[10px] font-semibold mb-1" style={{ fontFamily: F.b, color: branch.color }}>{branch.sub}</span><div style={{ width: 1, height: 14, background: C.hairline }} /><div className="relay-flow-edit-row flex items-center gap-2"><FlowNode label={branch.label} sub="Action" color={branch.color} icon={BIcon} /><button type="button" onClick={() => editNode(branch)} className="p-2 shrink-0" title="Edit action" aria-label={`Edit ${branch.label}`} style={{ border: `1px solid ${C.hairline}`, borderRadius: 7, background: C.white }}><Pencil size={13} color={C.inkSoft} /></button></div></div>;
+                        return <div key={branch.id} className="flex flex-col items-center"><span className="text-[10px] font-semibold mb-1" style={{ fontFamily: F.b, color: branch.color }}>{branch.sub}</span><div style={{ width: 1, height: 14, background: C.hairline }} /><div className="relay-flow-edit-row flex items-center gap-2"><FlowNode label={branch.label} sub="Action" color={branch.color} icon={BIcon} /><button type="button" onClick={() => editNode(branch)} className="p-2 shrink-0" title="Edit action" aria-label={`Edit ${branch.label}`} style={{ border: `1px solid ${C.hairline}`, borderRadius: 7, background: C.white }}><Pencil size={13} color={C.inkSoft} /></button></div>{isMessageStep(branch) && <MessageCard node={branch} onEdit={editNode} defaults={replyDefaults} />}</div>;
                       })}
                     </div>
                   )}
@@ -2680,6 +2813,7 @@ function AutomationsPage() {
           </div>
         </div>
 
+        {pickerFor !== null && <TemplatePicker onClose={() => setPickerFor(null)} onPick={(t) => { setEditForm((prev) => ({ ...prev, messageVariants: prev.messageVariants.map((m, i) => (i === pickerFor ? t.text : m)) })); setPickerFor(null); }} />}
         {editingNode && (
           <Modal title="Edit step" onClose={() => setEditingNode(null)} width={560}>
             <Field label="Action / step">
@@ -2699,7 +2833,7 @@ function AutomationsPage() {
               />
             </Field>
 
-            {flowNodes.find((n) => n.id === editingNode)?.type === "action" && !/human|transfer|assign/i.test(editForm.label) && (
+            {(isMessageStep(flowNodes.find((n) => n.id === editingNode)) || /message|whatsapp/i.test(editForm.label)) && !/human|transfer|assign/i.test(editForm.label) && (
               <div className="mt-5" style={{ borderTop: `1px solid ${C.hairline}`, paddingTop: 16 }}>
                 <div className="flex items-center justify-between gap-3 mb-2">
                   <div>
@@ -2724,6 +2858,7 @@ function AutomationsPage() {
                     <div className="flex items-center justify-between mb-2">
                       <label className="text-xs font-semibold" style={{ color: C.ink }}>
                         Variant {index + 1}
+                        <button type="button" onClick={() => setPickerFor(index)} className="ml-3 text-xs font-medium" style={{ color: C.jade }}>Use a saved template</button>
                       </label>
                       <button
                         type="button"
@@ -2772,7 +2907,16 @@ function AutomationsPage() {
                   + Add message variant
                 </button>
 
-                <div className="mt-4">
+                <div className="mt-4" data-testid="delay-fields">
+                  <Field label="Wait before sending (seconds)">
+                    <div className="flex items-center gap-2">
+                      <input style={{ ...inputStyle, width: 90 }} type="number" min="0" max="3600" value={editForm.delayMin} onChange={(e) => setEditForm((prev) => ({ ...prev, delayMin: e.target.value }))} aria-label="Shortest wait in seconds" />
+                      <span className="text-xs" style={{ color: C.inkSoft }}>to</span>
+                      <input style={{ ...inputStyle, width: 90 }} type="number" min="0" max="3600" value={editForm.delayMax} onChange={(e) => setEditForm((prev) => ({ ...prev, delayMax: e.target.value }))} aria-label="Longest wait in seconds" />
+                      <span className="text-xs" style={{ color: C.inkSoft }}>seconds</span>
+                    </div>
+                  </Field>
+                  <div className="text-xs -mt-2 mb-3" style={{ color: C.inkSoft }}>A random time between these, so automated replies don't arrive instantly. Use 0 and 0 to send at once.</div>
                   <Field label="Message assignment strategy">
                     <select
                       style={inputStyle}
