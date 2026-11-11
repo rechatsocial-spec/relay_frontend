@@ -675,8 +675,8 @@ function LoginScreen() {
       setSubmitting(false);
     }
   };
-  const [email, setEmail] = useState("deepa@relaycrm.io");
-  const [password, setPassword] = useState("password123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -714,10 +714,10 @@ function LoginScreen() {
         )}
 
         <Field label="Work email">
-          <input style={inputStyle} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <input style={inputStyle} type="email" name="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required />
         </Field>
         <Field label="Password">
-          <input style={inputStyle} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <input style={inputStyle} type="password" name="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
         </Field>
 
         {error && (
@@ -936,9 +936,9 @@ function Topbar({ onMenu }) {
 // DASHBOARDS
 // ============================================================
 function SuperAdminDashboard() {
-  const admins = useServerList("/admins");
-  const numbers = useServerList("/numbers");
-  const summary = useServerList("/analytics/summary");
+  const admins = useServerList("/admins", { refreshMs: 60000 });
+  const numbers = useServerList("/numbers", { refreshMs: 15000 });
+  const summary = useServerList("/analytics/summary", { refreshMs: 30000 });
   const live = useLiveNumbers();
 
   if (admins.error || numbers.error || summary.error) {
@@ -1004,7 +1004,7 @@ function SuperAdminDashboard() {
 function AdminDashboard() {
   const numbers = useServerList("/numbers");
   const automations = useServerList("/automations");
-  const summary = useServerList("/analytics/summary");
+  const summary = useServerList("/analytics/summary", { refreshMs: 30000 });
 
   if (numbers.error || automations.error || summary.error) {
     return <ErrorBanner message={numbers.error || automations.error || summary.error} onRetry={() => { numbers.reload(); automations.reload(); summary.reload(); }} />;
@@ -1054,7 +1054,10 @@ function AdminDashboard() {
 // ============================================================
 // WHATSAPP NUMBERS
 // ============================================================
-function NumbersPage({ onOpenNumber }) {
+function NumbersPage({ role, onOpenNumber }) {
+  const isSuper = role === "super_admin";
+  const [assigning, setAssigning] = useState(null);
+  const admins = useServerList("/admins", { enabled: isSuper });
   const [pageNum, setPageNum] = useState(1);
   const perPage = 10;
 
@@ -1079,11 +1082,19 @@ function NumbersPage({ onOpenNumber }) {
       )}
       {!numbers.loading && !numbers.error && numbers.data.length > 0 && (
         <>
-          <Table columns={["Phone Number", "Display Name", "Connection", "Chats", "Unread", "Last Activity", ""]}>
+          <Table columns={["Phone Number", "Display Name", ...(isSuper ? ["Assigned to"] : []), "Connection", "Chats", "Unread", "Last Activity", ""]}>
             {paged.map((n) => (
               <tr key={n.id} onClick={() => open(n.id)} onKeyDown={(e) => { if (e.key === "Enter") open(n.id); }} tabIndex={0} role="button" style={{ cursor: "pointer" }} title="Open this number's chats">
                 <Td mono>{n.phone}</Td>
                 <Td>{n.display_name}</Td>
+                {isSuper && (
+                  <Td>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12px]" style={{ fontFamily: F.b, color: n.admin_name ? C.ink : C.inkFaint }}>{n.admin_name || "Unassigned"}</span>
+                      <button type="button" onClick={(e) => { e.stopPropagation(); setAssigning(n); }} onKeyDown={(e) => e.stopPropagation()} className="px-2 py-0.5 text-[11px] font-medium" style={{ fontFamily: F.b, color: C.jade, border: `1px solid ${C.jade}`, borderRadius: 5 }}>Assign</button>
+                    </div>
+                  </Td>
+                )}
                 <Td><ConnectionPill connection={liveById[n.id] || "unknown"} /></Td>
                 <Td mono>{(n.chats || 0).toLocaleString()}</Td>
                 <Td mono>{n.unread > 0 ? <span style={{ color: C.jade, fontWeight: 600 }}>{n.unread}</span> : 0}</Td>
@@ -1101,7 +1112,44 @@ function NumbersPage({ onOpenNumber }) {
           </div>
         </>
       )}
+      {assigning && <AssignNumberModal number={assigning} admins={admins.data} onClose={() => setAssigning(null)} onDone={() => { setAssigning(null); numbers.reload(); }} />}
     </div>
+  );
+}
+
+function AssignNumberModal({ number, admins, onClose, onDone }) {
+  const { token } = useAuth();
+  const [adminId, setAdminId] = useState(admins.some((a) => a.id === number.admin_id) ? number.admin_id : "");
+  const [error, setError] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await callServer(`/numbers/${number.id}`, { method: "PATCH", token, body: { admin_id: adminId } });
+      onDone();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal title="Assign number" onClose={onClose}>
+      <div className="text-[12.5px] mb-3" style={{ fontFamily: F.b, color: C.ink }}><b>{number.display_name}</b> · <span style={{ fontFamily: F.m }}>{number.phone}</span></div>
+      <Field label="Assign to">
+        <select style={inputStyle} value={adminId} onChange={(e) => setAdminId(e.target.value)}>
+          <option value="" disabled>Choose an admin…</option>
+          {admins.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </select>
+      </Field>
+      <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.inkSoft }}>This number's chats and contacts move to the selected admin, who will then see them in their inbox. Currently: {number.admin_name || "nobody"}.</div>
+      {error && <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.rust }}>{error}</div>}
+      <div className="flex gap-2 mt-4">
+        <GhostBtn onClick={onClose}>Cancel</GhostBtn>
+        <PrimaryBtn disabled={saving || !adminId || adminId === number.admin_id} onClick={save}>{saving ? "Saving..." : "Assign"}</PrimaryBtn>
+      </div>
+    </Modal>
   );
 }
 
@@ -2642,24 +2690,17 @@ function ChartCard({ title, children, height = 220, note }) {
 }
 const axisStyle = { fontSize: 10.5, fontFamily: F.m, fill: C.inkSoft };
 
-function synthTimeSeries(seed) {
-  return Array.from({ length: 14 }, (_, i) => {
-    const day = i + 1;
-    const sent = seed + Math.round(Math.sin(i / 2) * (seed * 0.1)) + i * (seed * 0.01);
-    return { day: `Day ${day}`, sent: Math.round(sent), delivered: Math.round(sent * 0.94), read: Math.round(sent * 0.61), replies: Math.round(sent * 0.14) };
-  });
-}
-
 function AnalyticsPage() {
-  const summary = useServerList("/analytics/summary");
-  const funnel = useServerList("/analytics/funnel");
+  const summary = useServerList("/analytics/summary", { refreshMs: 30000 });
+  const funnel = useServerList("/analytics/funnel", { refreshMs: 30000 });
   const campaigns = useServerList("/campaigns");
+  const perDay = useServerList("/analytics/timeseries", { params: { days: 14 }, refreshMs: 30000 });
 
-  if (summary.error) return <ErrorBanner message={summary.error} onRetry={() => { summary.reload(); funnel.reload(); campaigns.reload(); }} />;
-  if (summary.loading || funnel.loading || campaigns.loading) return <TableSkeleton rows={6} />;
+  if (summary.error || perDay.error) return <ErrorBanner message={summary.error || perDay.error} onRetry={() => { summary.reload(); funnel.reload(); campaigns.reload(); perDay.reload(); }} />;
+  if (summary.loading || funnel.loading || campaigns.loading || perDay.loading) return <TableSkeleton rows={6} />;
 
   const s = summary.data;
-  const series = synthTimeSeries(Math.max(s.messages_sent / 14, 200));
+  const series = perDay.data.map((t) => ({ day: t.date.slice(5), sent: t.sent, replies: t.received, delivered: t.delivered, read: t.read }));
   const funnelData = funnel.data.map((f, i) => ({ ...f, fill: ["#1F6F54", "#2E8567", "#4A9C7E", "#D98E2E", "#B54A3C"][i] }));
 
   return (
@@ -2675,7 +2716,7 @@ function AnalyticsPage() {
       </div>
 
       <div className="relay-chart-grid grid grid-cols-2 gap-4 mb-4">
-        <ChartCard title="Messages over time" note="Illustrative">
+        <ChartCard title="Messages per day (last 14 days)">
           <LineChart data={series}>
             <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
             <XAxis dataKey="day" tick={axisStyle} interval={2} axisLine={{ stroke: C.hairline }} tickLine={false} />
@@ -2685,7 +2726,7 @@ function AnalyticsPage() {
             <Line type="monotone" dataKey="replies" stroke={C.amber} strokeWidth={2} dot={false} />
           </LineChart>
         </ChartCard>
-        <ChartCard title="Delivery vs read vs reply" note="Illustrative">
+        <ChartCard title="Delivered, read and replies (last 7 days)">
           <BarChart data={series.slice(-7)}>
             <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
             <XAxis dataKey="day" tick={axisStyle} axisLine={{ stroke: C.hairline }} tickLine={false} />
@@ -2778,7 +2819,7 @@ function Workspace() {
   const pageMap = {
     dashboard: role === "super_admin" ? <SuperAdminDashboard /> : <AdminDashboard />,
     admins: <AdminsPage />,
-    numbers: <NumbersPage onOpenNumber={(id) => { setInboxNumber(id); setPage("inbox"); }} />,
+    numbers: <NumbersPage role={role} onOpenNumber={(id) => { setInboxNumber(id); setPage("inbox"); }} />,
     inbox: <InboxPage numberId={inboxNumber} onNumberChange={setInboxNumber} />,
     crm: <CrmPage />,
     campaigns: <CampaignsPage />,
