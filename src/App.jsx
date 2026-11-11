@@ -4,7 +4,7 @@ import {
   LayoutGrid, Users, Phone, Inbox as InboxIcon, Contact, Megaphone, Workflow,
   Bot, BarChart3, ScrollText, Search, Bell, ChevronDown,
   Plus, X, Check, CheckCheck, Send, Paperclip, Image as ImageIcon, Video, Mic,
-  Smile, Play, Square, Trash2, UserCog,
+  Smile, Square, Trash2, UserCog,
   ChevronRight, ChevronLeft, Eye, Pencil, LogOut,
   CircleDot, Clock, Construction, ArrowDown, GitBranch, MessageCircle, Save, Menu,
   Zap, ListTree, RefreshCw, AlertCircle, WifiOff, FileText
@@ -29,6 +29,12 @@ class ServerError extends Error {
 // app signs the user out instead of leaving every page in an error state.
 let onUnauthorized = null;
 
+// Files stored or fetched by the server come back as "/api/v1/media/..." paths.
+const mediaSrc = (u) => {
+  if (!u || !u.startsWith("/")) return u;
+  try { return new URL(SERVER_BASE).origin + u; } catch { return u; }
+};
+
 async function callServer(path, { method = "GET", body, token, params } = {}) {
   let url = `${SERVER_BASE}${path}`;
   if (params) {
@@ -36,12 +42,13 @@ async function callServer(path, { method = "GET", body, token, params } = {}) {
     const qs = new URLSearchParams(clean).toString();
     if (qs) url += `?${qs}`;
   }
-  const headers = { "Content-Type": "application/json" };
+  const isForm = typeof FormData !== "undefined" && body instanceof FormData;
+  const headers = isForm ? {} : { "Content-Type": "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
 
   let res;
   try {
-    res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    res = await fetch(url, { method, headers, body: isForm ? body : body ? JSON.stringify(body) : undefined });
   } catch {
     // Fetch throws (not a 4xx/5xx) when the backend isn't reachable at all —
     // wrong host, server not running, CORS block. Surfaced distinctly so
@@ -345,6 +352,14 @@ function fmtDate(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
   return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+}
+function dayLabel(iso) {
+  const d = new Date(iso);
+  const start = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((start(new Date()) - start(d)) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
 }
 function fmtDateTime(iso) {
   if (!iso) return "—";
@@ -1061,23 +1076,64 @@ function NumbersPage({ role, onOpenNumber }) {
   const [pageNum, setPageNum] = useState(1);
   const perPage = 10;
 
+  const { token } = useAuth();
   const numbers = useServerList("/numbers", { refreshMs: 15000 });
   const live = useLiveNumbers();
   const liveById = Object.fromEntries(live.data.map((l) => [l.id, l.connection]));
+  const [sync, setSync] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshNote, setRefreshNote] = useState(null);
+
+  const loadSync = () => callServer("/system/whatsapp", { token }).then((st) => setSync(st.sync || null), () => {});
+  useEffect(() => {
+    loadSync();
+    const t = setInterval(loadSync, 15000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const refresh = async () => {
+    setRefreshing(true);
+    setRefreshNote(null);
+    try {
+      const r = await callServer("/numbers/refresh", { method: "POST", token });
+      setRefreshNote(r.ok ? { ok: true, text: `Found ${r.accounts_found} WhatsApp account${r.accounts_found === 1 ? "" : "s"}${r.created ? ` (${r.created} new)` : ""}. Chats are loading in the background.` } : { ok: false, text: r.error });
+      numbers.reload();
+      loadSync();
+    } catch (err) {
+      setRefreshNote({ ok: false, text: err.message });
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const totalPages = Math.max(1, Math.ceil(numbers.data.length / perPage));
   const paged = numbers.data.slice((pageNum - 1) * perPage, pageNum * perPage);
   const open = (id) => onOpenNumber(id);
+  const problem = refreshNote && !refreshNote.ok ? refreshNote.text : sync?.error;
 
   return (
     <div>
-      <PageHeader title="WhatsApp Numbers" desc={numbers.loading ? "Loading..." : `${numbers.data.length} numbers connected · click a number to open its chats`} />
+      <PageHeader title="WhatsApp Numbers" desc={numbers.loading ? "Loading..." : `${numbers.data.length} numbers connected · click a number to open its chats`}
+        action={isSuper && <GhostBtn onClick={refresh}><span className="flex items-center gap-1.5"><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Checking..." : "Refresh"}</span></GhostBtn>} />
+      {sync && !problem && (
+        <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.inkFaint }}>
+          {sync.last_ok_at ? `Last checked ${fmtDateTime(sync.last_ok_at)} · ${sync.accounts_found} WhatsApp account${sync.accounts_found === 1 ? "" : "s"} found` : "Checking your connected WhatsApp accounts..."}
+          {sync.history_importing ? " · loading chats..." : ""}{isSuper && sync.application_id ? ` · ${sync.application_id}` : ""}
+        </div>
+      )}
+      {refreshNote?.ok && !problem && <div className="text-[11.5px] mb-3 px-3 py-2" style={{ fontFamily: F.b, color: C.ink, background: C.jadeSoft, borderRadius: 6 }}>{refreshNote.text}</div>}
+      {problem && (
+        <div className="flex items-start gap-2 text-[12px] mb-3 px-3 py-2.5" style={{ fontFamily: F.b, color: C.rust, background: C.rustSoft, borderRadius: 6 }}>
+          <AlertCircle size={14} className="shrink-0 mt-0.5" /><span>{problem}</span>
+        </div>
+      )}
 
       {numbers.error && <ErrorBanner message={numbers.error} onRetry={numbers.reload} />}
       {numbers.loading && <TableSkeleton rows={5} />}
       {!numbers.loading && !numbers.error && numbers.data.length === 0 && (
         <div style={{ background: C.panel, border: `1px solid ${C.hairline}`, borderRadius: 8 }}>
-          <EmptyState icon={Phone} title="No numbers yet" desc="Your connected WhatsApp numbers show up here automatically." />
+          <EmptyState icon={Phone} title="No numbers yet" desc={isSuper ? "Your connected WhatsApp accounts are imported automatically. Press Refresh to check right now; if something is wrong, the reason shows above." : "No WhatsApp number has been assigned to you yet. Ask your Super Admin to assign one."} />
         </div>
       )}
       {!numbers.loading && !numbers.error && numbers.data.length > 0 && (
@@ -1339,38 +1395,6 @@ function inServiceWindow(lastInboundAt) {
   return !!lastInboundAt && Date.now() - new Date(lastInboundAt).getTime() < DAY_MS;
 }
 
-function VoiceComposer({ onCancel, onSend }) {
-  const [recording, setRecording] = useState(true);
-  const [seconds, setSeconds] = useState(0);
-  useEffect(() => {
-    if (!recording) return;
-    const t = setInterval(() => setSeconds((s) => s + 1), 1000);
-    return () => clearInterval(t);
-  }, [recording]);
-  const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
-  const ss = String(seconds % 60).padStart(2, "0");
-
-  if (recording) {
-    return (
-      <div className="flex items-center gap-3 px-3 py-2.5" style={{ border: `1px solid ${C.rust}`, borderRadius: 10, background: C.rustSoft }}>
-        <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: C.rust }} />
-        <span className="text-[12.5px] flex-1" style={{ fontFamily: F.m, color: C.rust }}>Recording (demo)... {mm}:{ss}</span>
-        <button onClick={onCancel} className="text-[11.5px] font-medium px-2.5 py-1" style={{ fontFamily: F.b, color: C.inkSoft }}>Delete</button>
-        <button onClick={() => setRecording(false)} className="flex items-center gap-1 text-[11.5px] font-medium px-2.5 py-1 text-white" style={{ fontFamily: F.b, background: C.rust, borderRadius: 6 }}><Square size={11} /> Stop</button>
-      </div>
-    );
-  }
-  return (
-    <div className="flex items-center gap-3 px-3 py-2.5" style={{ border: `1px solid ${C.hairline}`, borderRadius: 10 }}>
-      <Play size={16} color={C.jade} />
-      <div className="flex-1 h-[3px]" style={{ background: C.hairlineSoft, borderRadius: 3 }}><div style={{ width: "40%", height: 3, background: C.jade, borderRadius: 3 }} /></div>
-      <span className="text-[11px]" style={{ fontFamily: F.m, color: C.inkSoft }}>{mm}:{ss}</span>
-      <button onClick={onCancel}><Trash2 size={14} color={C.inkSoft} /></button>
-      <button onClick={() => onSend(seconds)} className="p-1.5" style={{ background: C.jade, borderRadius: 7 }}><Send size={13} color="white" /></button>
-    </div>
-  );
-}
-
 /** Delivery state of an outgoing message — WhatsApp-style ticks. */
 function StatusTick({ status }) {
   const t = { queued: [Clock, C.inkFaint, "Queued"], sent: [Check, C.inkFaint, "Sent"], delivered: [CheckCheck, C.inkFaint, "Delivered"],
@@ -1380,15 +1404,111 @@ function StatusTick({ status }) {
   return <span title={label} className="inline-flex"><Icon size={13} color={color} /></span>;
 }
 
-function MediaPreview({ msg, light }) {
-  const url = msg.media_url;
-  if (!url || !/^https?:\/\//.test(url)) return <span style={{ opacity: 0.7 }}>[{msg.type}{msg.type === "voice" && msg.duration_seconds ? ` · ${msg.duration_seconds}s` : ""}]</span>;
-  if (msg.type === "image" || msg.type === "sticker") {
-    return <a href={url} target="_blank" rel="noreferrer"><img src={url} alt={msg.type} style={{ maxWidth: 220, maxHeight: 220, borderRadius: 6, display: "block" }} onError={(e) => { e.currentTarget.replaceWith(document.createTextNode("[image — open link]")); }} /></a>;
+function VoiceRecorder({ onCancel, onSend }) {
+  const [phase, setPhase] = useState("starting"); // starting | recording | recorded | error
+  const [seconds, setSeconds] = useState(0);
+  const [error, setError] = useState(null);
+  const [clip, setClip] = useState(null); // { blob, url, seconds }
+  const [sending, setSending] = useState(false);
+  const recRef = useRef(null);
+  const streamRef = useRef(null);
+  const chunksRef = useRef([]);
+  const startedRef = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") throw new Error("This browser can't record audio.");
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        streamRef.current = stream;
+        const mime = ["audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported?.(t));
+        const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+        rec.ondataavailable = (e) => { if (e.data && e.data.size) chunksRef.current.push(e.data); };
+        rec.onstop = () => {
+          const secs = Math.max(1, Math.round((Date.now() - startedRef.current) / 1000));
+          const blob = new Blob(chunksRef.current, { type: rec.mimeType || mime || "audio/webm" });
+          stream.getTracks().forEach((t) => t.stop());
+          setClip({ blob, url: URL.createObjectURL(blob), seconds: secs });
+          setPhase("recorded");
+        };
+        recRef.current = rec;
+        startedRef.current = Date.now();
+        rec.start();
+        setPhase("recording");
+      } catch (err) {
+        if (cancelled) return;
+        setError(err?.name === "NotAllowedError" ? "Microphone access is blocked. Allow it in your browser, then try again." : (err?.message || "Could not start the microphone."));
+        setPhase("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try { if (recRef.current && recRef.current.state !== "inactive") { recRef.current.onstop = null; recRef.current.stop(); } } catch { /* already stopped */ }
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  useEffect(() => {
+    if (phase !== "recording") return;
+    const t = setInterval(() => {
+      const s2 = Math.round((Date.now() - startedRef.current) / 1000);
+      setSeconds(s2);
+      if (s2 >= 300 && recRef.current?.state === "recording") recRef.current.stop(); // 5 minute cap
+    }, 250);
+    return () => clearInterval(t);
+  }, [phase]);
+
+  useEffect(() => () => { if (clip?.url) URL.revokeObjectURL(clip.url); }, [clip]);
+
+  const mm = (n) => `${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`;
+  const stop = () => { if (recRef.current?.state === "recording") recRef.current.stop(); };
+  const send = async () => { setSending(true); try { await onSend(clip.blob, clip.seconds); } finally { setSending(false); } };
+
+  if (phase === "error") {
+    return (
+      <div className="flex items-center gap-3 px-3 py-2.5" style={{ border: `1px solid ${C.rust}`, borderRadius: 10, background: C.rustSoft }}>
+        <AlertCircle size={15} color={C.rust} />
+        <span className="text-[12px] flex-1" style={{ fontFamily: F.b, color: C.rust }}>{error}</span>
+        <button onClick={onCancel} className="text-[11.5px] font-medium px-2.5 py-1" style={{ fontFamily: F.b, color: C.inkSoft }}>Close</button>
+      </div>
+    );
   }
-  if (msg.type === "video") return <video src={url} controls style={{ maxWidth: 240, borderRadius: 6 }} />;
-  if (msg.type === "voice") return <audio src={url} controls style={{ maxWidth: 240 }} />;
-  return <a href={url} target="_blank" rel="noreferrer" style={{ color: light ? "white" : C.jade, textDecoration: "underline" }}>Open attachment</a>;
+  if (phase === "recorded" && clip) {
+    return (
+      <div className="flex items-center gap-3 px-3 py-2" style={{ border: `1px solid ${C.hairline}`, borderRadius: 10 }}>
+        <button onClick={onCancel} disabled={sending} aria-label="Discard recording" title="Discard"><Trash2 size={16} color={C.inkSoft} /></button>
+        <audio src={clip.url} controls style={{ height: 34, flex: 1, minWidth: 0 }} />
+        <span className="text-[11px]" style={{ fontFamily: F.m, color: C.inkSoft }}>{mm(clip.seconds)}</span>
+        <button onClick={send} disabled={sending} aria-label="Send voice message" title="Send voice message" className="p-2" style={{ background: sending ? C.gray : C.jade, borderRadius: 7 }}><Send size={14} color="white" /></button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-3 px-3 py-2.5" style={{ border: `1px solid ${C.rust}`, borderRadius: 10, background: C.white }}>
+      <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: C.rust }} />
+      <span className="text-[12.5px] flex-1" style={{ fontFamily: F.m, color: C.rust }}>{phase === "starting" ? "Starting microphone..." : `Recording ${mm(seconds)}`}</span>
+      <button onClick={onCancel} className="text-[11.5px] font-medium px-2.5 py-1" style={{ fontFamily: F.b, color: C.inkSoft }}>Cancel</button>
+      <button onClick={stop} disabled={phase !== "recording"} className="flex items-center gap-1 text-[11.5px] font-medium px-2.5 py-1 text-white" style={{ fontFamily: F.b, background: C.rust, borderRadius: 6, opacity: phase === "recording" ? 1 : 0.5 }}><Square size={11} /> Stop</button>
+    </div>
+  );
+}
+
+function MediaPreview({ msg, light }) {
+  const url = mediaSrc(msg.media_url);
+  const label = msg.type === "voice" ? "voice message" : msg.type;
+  if (!url) return <span style={{ opacity: 0.7 }}>[{label}{msg.type === "voice" && msg.duration_seconds ? ` · ${msg.duration_seconds}s` : ""}]</span>;
+  if (msg.type === "image" || msg.type === "sticker") {
+    return <a href={url} target="_blank" rel="noreferrer"><img src={url} alt={msg.media_name || msg.type} style={{ maxWidth: 240, maxHeight: 260, borderRadius: 6, display: "block" }} onError={(e) => { e.currentTarget.alt = `[${msg.type} unavailable]`; }} /></a>;
+  }
+  if (msg.type === "video") return <video src={url} controls preload="metadata" style={{ maxWidth: 260, borderRadius: 6 }} />;
+  if (msg.type === "voice") return <audio src={url} controls preload="metadata" style={{ width: 240, height: 36 }} />;
+  return (
+    <a href={url} target="_blank" rel="noreferrer" download={msg.media_name || undefined} className="inline-flex items-center gap-1.5" style={{ color: light ? "white" : C.jade, textDecoration: "underline" }}>
+      <FileText size={14} /> {msg.media_name || "Open file"}
+    </a>
+  );
 }
 
 function Bubble({ msg }) {
@@ -1420,32 +1540,6 @@ function Bubble({ msg }) {
         )}
       </div>
     </div>
-  );
-}
-
-function MediaModal({ initialType = "image", onClose, onSend }) {
-  const [type, setType] = useState(initialType);
-  const [url, setUrl] = useState("");
-  const [caption, setCaption] = useState("");
-  const valid = /^https:\/\/\S+$/.test(url.trim());
-  return (
-    <Modal title="Send media" onClose={onClose} width={440}>
-      <Field label="Type">
-        <select style={inputStyle} value={type} onChange={(e) => setType(e.target.value)}>
-          <option value="image">Image (JPG / PNG)</option>
-          <option value="video">Video (MP4)</option>
-          <option value="voice">Audio / voice note (MP3 / OGG)</option>
-        </select>
-      </Field>
-      <Field label="Public file link (https)">
-        <input style={inputStyle} placeholder="https://yourdomain.com/offer.jpg" value={url} onChange={(e) => setUrl(e.target.value)} />
-      </Field>
-      <Field label="Caption (optional)">
-        <input style={inputStyle} value={caption} onChange={(e) => setCaption(e.target.value)} />
-      </Field>
-      <div className="text-[11px] mb-3" style={{ fontFamily: F.b, color: C.inkFaint }}>WhatsApp downloads the file from this link, so it must be publicly reachable. Max 16 MB.</div>
-      <div className="flex gap-2"><GhostBtn onClick={onClose}>Cancel</GhostBtn><PrimaryBtn disabled={!valid} onClick={() => onSend({ type, media_url: url.trim(), text: caption.trim() || undefined })}>Send</PrimaryBtn></div>
-    </Modal>
   );
 }
 
@@ -1580,9 +1674,12 @@ function InboxPage({ numberId, onNumberChange }) {
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [sendError, setSendError] = useState(null);
-  const [composerMode, setComposerMode] = useState(null); // null | "voice" | "stickers" | "media:image" | "media:video" | "template"
+  const [composerMode, setComposerMode] = useState(null); // null | "voice" | "stickers" | "template"
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [pendingFile, setPendingFile] = useState(null); // a file picked from the device, waiting to be sent
+  const [pendingUrl, setPendingUrl] = useState(null);
+  const fileInputRef = useRef(null);
   const [mobileThreadOpen, setMobileThreadOpen] = useState(false);
   const threadRef = useRef(null);
   const lastCountRef = useRef(0);
@@ -1636,6 +1733,49 @@ function InboxPage({ numberId, onNumberChange }) {
     }
   };
 
+  useEffect(() => {
+    if (!pendingFile || !pendingFile.type.startsWith("image/")) { setPendingUrl(null); return; }
+    const u = URL.createObjectURL(pendingFile);
+    setPendingUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [pendingFile]);
+
+  const pickFile = (accept) => {
+    if (!fileInputRef.current) return;
+    fileInputRef.current.accept = accept;
+    fileInputRef.current.click();
+  };
+
+  // Sends a picked file or a recorded voice note through the server.
+  const uploadAttachment = async (file, { caption = "", voice = false, duration = null } = {}) => {
+    if (!activeConvId) return false;
+    setSending(true);
+    setSendError(null);
+    try {
+      const form = new FormData();
+      form.append("file", file, file.name);
+      if (caption) form.append("caption", caption);
+      if (voice) { form.append("voice", "true"); if (duration) form.append("duration", String(duration)); }
+      const msg = await callServer(`/inbox/conversations/${activeConvId}/attachments`, { method: "POST", token, body: form });
+      const fresh = await callServer(`/inbox/conversations/${activeConvId}`, { token });
+      setDetail(fresh);
+      conversations.refresh();
+      if (msg.status === "failed") setSendError(`WhatsApp rejected the message${msg.error_message ? `: ${msg.error_message}` : ""}`);
+      return msg.status !== "failed";
+    } catch (err) {
+      setSendError(err.message);
+      return false;
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const sendPendingFile = async () => {
+    if (!pendingFile) return;
+    const ok = await uploadAttachment(pendingFile, { caption: draft.trim() });
+    if (ok) { setPendingFile(null); setDraft(""); }
+  };
+
   const statusColor = { needs_human: C.rust, bot: C.amber, human: C.jade };
   const windowOpen = detail && inServiceWindow(detail.last_inbound_at);
 
@@ -1656,7 +1796,7 @@ function InboxPage({ numberId, onNumberChange }) {
               <button key={k} onClick={() => setFilter(k)} className="text-[11px] px-2 py-1 font-medium" style={{ fontFamily: F.b, borderRadius: 5, color: filter === k ? "white" : C.inkSoft, background: filter === k ? C.ink : "transparent" }}>{l}</button>
             ))}
           </div>
-          <span className="text-[10px] px-1.5 py-0.5 shrink-0" title={live ? "Messages really go out over WhatsApp" : "Demo mode — nothing is really sent"} style={{ fontFamily: F.b, color: live ? C.jade : C.amber, background: live ? C.jadeSoft : C.amberSoft, borderRadius: 4 }}>{live ? "Live" : "Demo mode"}</span>
+          {live && <span className="text-[10px] px-1.5 py-0.5 shrink-0" title="Messages really go out over WhatsApp" style={{ fontFamily: F.b, color: live ? C.jade : C.amber, background: live ? C.jadeSoft : C.amberSoft, borderRadius: 4 }}>Live</span>}
         </div>
         <div className="flex-1 overflow-y-auto">
           {conversations.loading && <div className="px-3.5 py-6 text-[12px]" style={{ fontFamily: F.b, color: C.inkFaint }}>Loading conversations...</div>}
@@ -1700,9 +1840,18 @@ function InboxPage({ numberId, onNumberChange }) {
               </div>
               {detail.status === "needs_human" && <span className="text-[10.5px] font-medium px-2 py-1" style={{ fontFamily: F.b, color: C.rust, background: C.rustSoft, borderRadius: 5 }}>Needs human</span>}
             </div>
-            <div ref={threadRef} className="relay-thread-messages flex-1 overflow-y-auto px-5 py-4">
+            <div ref={threadRef} className="relay-thread-messages flex-1 overflow-y-auto px-5 py-4" style={{ background: "#ECE5DD" }}>
               {detail.messages.length === 0 && <div className="text-[12px] text-center py-8" style={{ fontFamily: F.b, color: C.inkFaint }}>No messages yet.</div>}
-              {detail.messages.map((m) => <Bubble key={m.id} msg={m} />)}
+              {detail.messages.map((m, i) => {
+                const day = dayLabel(m.created_at);
+                const showDay = i === 0 || day !== dayLabel(detail.messages[i - 1].created_at);
+                return (
+                  <React.Fragment key={m.id}>
+                    {showDay && <div className="flex justify-center my-3"><span className="text-[11px] px-3 py-1" style={{ fontFamily: F.b, color: C.inkSoft, background: "rgba(255,255,255,0.85)", borderRadius: 7, boxShadow: "0 1px 1px rgba(0,0,0,.06)" }}>{day}</span></div>}
+                    <Bubble msg={m} />
+                  </React.Fragment>
+                );
+              })}
             </div>
             <div className="relay-thread-composer px-4 py-3" style={{ borderTop: `1px solid ${C.hairline}` }}>
               {live && !windowOpen && (
@@ -1712,20 +1861,37 @@ function InboxPage({ numberId, onNumberChange }) {
                 </div>
               )}
               {sendError && <div className="text-[11.5px] mb-2" style={{ fontFamily: F.b, color: C.rust }}>{sendError}</div>}
+              <input ref={fileInputRef} type="file" data-testid="attachment-input" style={{ display: "none" }}
+                onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) setPendingFile(f); }} />
+              {pendingFile && (
+                <div className="flex items-center gap-3 px-3 py-2 mb-2" style={{ border: `1px solid ${C.hairline}`, borderRadius: 10, background: C.white }}>
+                  {pendingUrl ? <img src={pendingUrl} alt="" style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6 }} /> : <FileText size={26} color={C.inkSoft} />}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[12.5px] font-medium truncate" style={{ fontFamily: F.b, color: C.ink }}>{pendingFile.name}</div>
+                    <div className="text-[11px]" style={{ fontFamily: F.m, color: C.inkFaint }}>{(pendingFile.size / 1024 < 1024 ? `${Math.max(1, Math.round(pendingFile.size / 1024))} KB` : `${(pendingFile.size / 1048576).toFixed(1)} MB`)} · the text you type is sent as its caption</div>
+                  </div>
+                  <button onClick={() => setPendingFile(null)} disabled={sending} className="text-[11.5px] font-medium px-2.5 py-1" style={{ fontFamily: F.b, color: C.inkSoft }}>Remove</button>
+                  <button onClick={sendPendingFile} disabled={sending} className="flex items-center gap-1 text-[11.5px] font-medium px-3 py-1.5 text-white" style={{ fontFamily: F.b, background: sending ? C.gray : C.jade, borderRadius: 6 }}><Send size={12} /> {sending ? "Sending..." : "Send file"}</button>
+                </div>
+              )}
               {composerMode === "voice" ? (
-                <VoiceComposer onCancel={() => setComposerMode(null)} onSend={(secs) => sendMessage({ type: "voice", duration_seconds: secs, media_url: "mock://voice.ogg" })} />
+                <VoiceRecorder onCancel={() => setComposerMode(null)} onSend={async (blob, secs) => {
+                  const ext = /ogg/.test(blob.type) ? "ogg" : /mp4/.test(blob.type) ? "m4a" : "webm";
+                  const ok = await uploadAttachment(new File([blob], `voice-note.${ext}`, { type: blob.type || "audio/webm" }), { voice: true, duration: secs });
+                  if (ok) setComposerMode(null);
+                }} />
               ) : (
                 <div className="relative flex items-end gap-1.5 px-2.5 py-1.5" style={{ border: `1px solid ${C.hairline}`, borderRadius: 10 }}>
                   <div className="relay-composer-icons flex items-center">
-                    <IconBtn icon={Paperclip} onClick={() => setComposerMode("media:image")} />
-                    <IconBtn icon={ImageIcon} onClick={() => setComposerMode("media:image")} />
-                    <IconBtn icon={Video} onClick={() => setComposerMode("media:video")} />
+                    <IconBtn icon={Paperclip} onClick={() => pickFile("image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip")} />
+                    <IconBtn icon={ImageIcon} onClick={() => pickFile("image/*")} />
+                    <IconBtn icon={Video} onClick={() => pickFile("video/*")} />
                     <IconBtn icon={FileText} onClick={() => setComposerMode("template")} active={composerMode === "template"} />
                     <IconBtn icon={Smile} onClick={() => setComposerMode(composerMode === "stickers" ? null : "stickers")} active={composerMode === "stickers"} />
+                    <IconBtn icon={Mic} onClick={() => setComposerMode("voice")} />
                     <textarea value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Write a reply..." rows={1}
                       onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && draft.trim() && !sending) { e.preventDefault(); sendMessage({ type: "text", text: draft }); } }}
                       className="relay-thread-input flex-1 bg-transparent outline-none resize-none text-[13px] py-1.5" style={{ fontFamily: F.b, color: C.ink }} />
-                    {!live && <IconBtn icon={Mic} onClick={() => setComposerMode("voice")} />}
                     <button disabled={sending || !draft.trim()} onClick={() => sendMessage({ type: "text", text: draft })} className="p-2" style={{ background: sending || !draft.trim() ? C.gray : C.jade, borderRadius: 7 }}><Send size={14} color="white" /></button>
                   </div>
                   {composerMode === "stickers" && (
@@ -1741,7 +1907,6 @@ function InboxPage({ numberId, onNumberChange }) {
       </div>
 
       {detail && <CustomerPanel key={detail.contact.id} contact={detail.contact} />}
-      {composerMode?.startsWith("media:") && <MediaModal initialType={composerMode.slice(6)} onClose={() => setComposerMode(null)} onSend={sendMessage} />}
       {composerMode === "template" && <TemplateModal onClose={() => setComposerMode(null)} onSend={sendMessage} />}
     </div>
   );
@@ -2211,7 +2376,7 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
             ["Audience", form.audienceMode === "all" ? "All contacts" : form.audienceMode === "status" ? `Status: ${form.status}` : form.audienceMode === "list" ? `Pasted list (${form.listTag})` : `Tag: ${form.tag || "—"}`],
             ["Recipients", shownPreview ? String(shownPreview.recipients) : "—"],
             ["Message", form.useTemplate ? `Template ${form.content_sid}` : form.message_type === "text" ? form.message_text : `${form.message_type}: ${form.media_url}`],
-            ["Delivery", live ? `Real WhatsApp · ~${wa.send_interval_seconds}s between messages` : "Demo mode — nothing is really sent"],
+            ["Delivery", `Real WhatsApp · ~${wa.send_interval_seconds}s between messages`],
           ].map(([k, v]) => (
             <div key={k} className="flex items-start justify-between gap-4 py-1.5" style={{ borderBottom: `1px solid ${C.hairlineSoft}` }}>
               <span className="text-[12px] shrink-0" style={{ fontFamily: F.b, color: C.inkSoft }}>{k}</span>
@@ -2312,9 +2477,56 @@ function FlowNode({ label, sub, color, icon: Icon }) {
 }
 function FlowArrow() { return <div className="flex justify-center py-1"><ArrowDown size={14} color={C.inkFaint} /></div>; }
 
+function NewAutomationModal({ onClose, onCreated }) {
+  const { token } = useAuth();
+  const templates = useServerList("/automations/templates");
+  const [picked, setPicked] = useState("welcome_followup");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const chosen = templates.data.find((t) => t.id === picked);
+
+  const create = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await callServer("/automations/from-template", { method: "POST", token, body: { template_id: picked, name: name.trim() || undefined } });
+      onCreated(created);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="New automation" onClose={onClose} width={580}>
+      <div className="text-[12px] mb-3" style={{ fontFamily: F.b, color: C.inkSoft }}>Start from a ready-made template. Every template starts when a <b>new customer</b> writes to you. It is created as <b>Scheduled</b>: review the messages, then press Activate.</div>
+      {templates.loading && <TableSkeleton rows={3} />}
+      {templates.error && <ErrorBanner message={templates.error} onRetry={templates.reload} />}
+      <div className="flex flex-col gap-2 mb-3">
+        {templates.data.map((t) => (
+          <button key={t.id} type="button" onClick={() => setPicked(t.id)} className="text-left px-3 py-2.5" style={{ border: `1px solid ${picked === t.id ? C.jade : C.hairline}`, borderRadius: 8, background: picked === t.id ? C.jadeSoft : C.white }}>
+            <div className="text-[12.5px] font-semibold" style={{ fontFamily: F.b, color: C.ink }}>{t.name}</div>
+            <div className="text-[11.5px] mt-0.5" style={{ fontFamily: F.b, color: C.inkSoft }}>{t.description}</div>
+            <div className="text-[10.5px] mt-1.5" style={{ fontFamily: F.m, color: C.inkFaint }}>{t.steps.join("  →  ")}</div>
+          </button>
+        ))}
+      </div>
+      <Field label="Name (optional)"><input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder={chosen?.name || "Automation name"} /></Field>
+      {error && <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.rust }}>{error}</div>}
+      <div className="flex gap-2 mt-4">
+        <GhostBtn onClick={onClose}>Cancel</GhostBtn>
+        <PrimaryBtn disabled={busy || !picked || templates.loading} onClick={create}>{busy ? "Creating..." : "Create automation"}</PrimaryBtn>
+      </div>
+    </Modal>
+  );
+}
+
 function AutomationsPage() {
   const { token } = useAuth();
   const automations = useServerList("/automations");
+  const [showNew, setShowNew] = useState(false);
   const [openBuilder, setOpenBuilder] = useState(null);
   const [busy, setBusy] = useState(false);
   const [flowNodes, setFlowNodes] = useState([]);
@@ -2329,24 +2541,25 @@ function AutomationsPage() {
 
   const defaultNodes = [
     { id: "trigger", type: "trigger", label: "New customer", sub: "Trigger", icon: "Zap", color: C.blue },
-    { id: "welcome", type: "action", label: "Send welcome message", sub: "Text + image", icon: "Send", color: C.jade },
+    { id: "welcome", type: "action", label: "Send welcome message", sub: "Message", icon: "Send", color: C.jade, assignmentMode: "round_robin", messageVariants: ["Hi {{name}}! Thanks for contacting us. How can we help you today?"] },
     { id: "delay", type: "delay", label: "Wait 2 hours", sub: "Delay", icon: "Clock", color: C.gray },
     { id: "condition", type: "condition", label: "Customer replied?", sub: "Condition", icon: "GitBranch", color: C.amber },
     { id: "yes", type: "action", label: "Transfer to human", sub: "YES", icon: "UserCog", color: C.jade },
-    { id: "no", type: "action", label: "Send follow-up", sub: "NO", icon: "Send", color: C.rust },
+    { id: "no", type: "action", label: "Send follow-up", sub: "NO", icon: "Send", color: C.rust, assignmentMode: "round_robin", messageVariants: ["Hi {{name}}, just checking in. Is there anything we can help you with?"] },
   ];
 
   const openAutomation = (automation) => {
     const saved = Array.isArray(automation.flow?.nodes) ? automation.flow.nodes : [];
-    const merged = saved.length >= 4
+    const iconFor = (n) => n.icon || ({ trigger: "Zap", delay: "Clock", condition: "GitBranch" }[n.type] || (/human|transfer|assign/i.test(n.label || "") ? "UserCog" : "Send"));
+    const merged = saved.length > 0
       ? saved.map((n, i) => ({
           ...n,
           id: n.id || `node-${i}`,
           type: n.type || "action",
           label: n.label || "Step",
           sub: n.sub || n.type || "Action",
-          icon: n.icon || (n.type === "trigger" ? "Zap" : "Send"),
-          color: n.color || (n.type === "trigger" ? C.blue : C.jade),
+          icon: iconFor(n),
+          color: n.color || (n.type === "trigger" ? C.blue : n.id === "no" ? C.rust : n.type === "delay" ? C.gray : n.type === "condition" ? C.amber : C.jade),
         }))
       : defaultNodes;
     setFlowNodes(merged);
@@ -2486,7 +2699,7 @@ function AutomationsPage() {
               />
             </Field>
 
-            {/message|whatsapp/i.test(editForm.label) && (
+            {flowNodes.find((n) => n.id === editingNode)?.type === "action" && !/human|transfer|assign/i.test(editForm.label) && (
               <div className="mt-5" style={{ borderTop: `1px solid ${C.hairline}`, paddingTop: 16 }}>
                 <div className="flex items-center justify-between gap-3 mb-2">
                   <div>
@@ -2571,7 +2784,7 @@ function AutomationsPage() {
                     </select>
                   </Field>
                   <div className="text-xs mt-2" style={{ color: C.inkSoft }}>
-                    This saves the assignment preference. Actual message selection and delivery must be implemented by the backend worker.
+                    Round-robin rotates through the variants; random picks one each time. Use {"{{name}}"} for the customer's first name.
                   </div>
                 </div>
               </div>
@@ -2589,10 +2802,16 @@ function AutomationsPage() {
 
   return (
     <div>
-      <PageHeader title="Automations" desc={automations.loading ? "Loading..." : `${automations.data.length} automations`} />
+      <PageHeader title="Automations" desc={automations.loading ? "Loading..." : `${automations.data.length} automations`} action={<PrimaryBtn onClick={() => setShowNew(true)}><span className="flex items-center gap-1.5"><Plus size={13} /> New automation</span></PrimaryBtn>} />
+      {showNew && <NewAutomationModal onClose={() => setShowNew(false)} onCreated={(created) => { setShowNew(false); automations.reload(); openAutomation(created); }} />}
+      {!automations.loading && !automations.error && automations.data.length === 0 && (
+        <div style={{ background: C.panel, border: `1px solid ${C.hairline}`, borderRadius: 8 }}>
+          <EmptyState icon={Workflow} title="No automations yet" desc="Press New automation and pick a template to answer new customers automatically." />
+        </div>
+      )}
       {automations.error && <ErrorBanner message={automations.error} onRetry={automations.reload} />}
       {automations.loading && <TableSkeleton rows={5} />}
-      {!automations.loading && !automations.error && (
+      {!automations.loading && !automations.error && automations.data.length > 0 && (
         <Table columns={["Automation", "Status", "Recipients", "Sent", "Delivered", "Replies", "Progress", "Actions"]}>
           {automations.data.map((a) => {
             const progress = a.recipients ? Math.round((a.sent / a.recipients) * 100) : 0;
