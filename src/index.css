@@ -51,7 +51,7 @@ button:not(:disabled):active { transform: scale(.97); filter: brightness(.96); }
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
 
-/* ---------- User preferences (Settings) ---------- */
+/* ---------- User preferences ---------- */
 html.relay-dark, html.relay-dark body { background: #0d110f; color-scheme: dark; }
 html.relay-dark #root { filter: invert(.9) hue-rotate(180deg); }
 html.relay-dark img, html.relay-dark video { filter: invert(1) hue-rotate(180deg); }
@@ -62,3 +62,5 @@ html[data-text-size="xlarge"] .relay-page { zoom: 1.25; }
 html.relay-reduce-motion *, html.relay-reduce-motion *::before, html.relay-reduce-motion *::after {
   animation: none !important; transition: none !important; scroll-behavior: auto !important;
 }
+@keyframes relay-pulse { 0% { box-shadow: 0 0 0 0 rgba(31,138,96,.5); } 70% { box-shadow: 0 0 0 7px rgba(31,138,96,0); } 100% { box-shadow: 0 0 0 0 rgba(31,138,96,0); } }
+.relay-live-dot { animation: relay-pulse 2s infinite; }

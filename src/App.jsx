@@ -2,12 +2,12 @@ import React, { useState, useEffect, useRef, createContext, useContext } from "r
 import { createPortal } from "react-dom";
 import {
   LayoutGrid, Users, Phone, Inbox as InboxIcon, Contact, Megaphone, Workflow,
-  Bot, BarChart3, ScrollText, Settings as SettingsIcon, Search, Bell, ChevronDown,
+  Bot, BarChart3, ScrollText, Search, Bell, ChevronDown,
   Plus, X, Check, CheckCheck, Send, Paperclip, Image as ImageIcon, Video, Mic,
   Smile, Play, Square, Trash2, UserCog,
-  ChevronRight, ChevronLeft, Eye, Pencil, LogOut, Key,
+  ChevronRight, ChevronLeft, Eye, Pencil, LogOut,
   CircleDot, Clock, Construction, ArrowDown, GitBranch, MessageCircle, Save, Menu,
-  Zap, ListTree, RefreshCw, AlertCircle, WifiOff, FileText, Copy
+  Zap, ListTree, RefreshCw, AlertCircle, WifiOff, FileText
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -15,13 +15,13 @@ import {
 } from "recharts";
 
 // ============================================================
-// API CLIENT — every page below calls the real FastAPI backend.
+// SERVER CLIENT — every page below talks to the real backend.
 // Backend URL comes from VITE_API_URL (see .env.example); defaults to
 // localhost:8000, which is where the backend README runs it.
 // ============================================================
-const API_BASE = `${(import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/+$/, "")}/api/v1`;
+const SERVER_BASE = `${(import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/+$/, "")}/api/v1`;
 
-class ApiError extends Error {
+class ServerError extends Error {
   constructor(message, status) { super(message); this.status = status; }
 }
 
@@ -29,8 +29,8 @@ class ApiError extends Error {
 // app signs the user out instead of leaving every page in an error state.
 let onUnauthorized = null;
 
-async function apiFetch(path, { method = "GET", body, token, params } = {}) {
-  let url = `${API_BASE}${path}`;
+async function callServer(path, { method = "GET", body, token, params } = {}) {
+  let url = `${SERVER_BASE}${path}`;
   if (params) {
     const clean = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "");
     const qs = new URLSearchParams(clean).toString();
@@ -46,14 +46,14 @@ async function apiFetch(path, { method = "GET", body, token, params } = {}) {
     // Fetch throws (not a 4xx/5xx) when the backend isn't reachable at all —
     // wrong host, server not running, CORS block. Surfaced distinctly so
     // the UI can say "can't reach the server" instead of a generic error.
-    throw new ApiError("Could not reach the backend — is it running on " + API_BASE + "?", 0);
+    throw new ServerError("Could not reach the server. Check your connection and try again.", 0);
   }
   if (!res.ok) {
     let detail = res.statusText;
     try { const j = await res.json(); detail = j.detail || detail; } catch { /* body wasn't JSON */ }
     if (token && res.status === 401 && onUnauthorized) onUnauthorized();
-    if (typeof detail !== "string") detail = JSON.stringify(detail); // FastAPI 422 returns a list
-    throw new ApiError(detail, res.status);
+    if (typeof detail !== "string") detail = JSON.stringify(detail); // validation errors come back as a list
+    throw new ServerError(detail, res.status);
   }
   if (res.status === 204) return null;
   return res.json();
@@ -62,7 +62,7 @@ async function apiFetch(path, { method = "GET", body, token, params } = {}) {
 // ============================================================
 // AUTH — session is kept in localStorage so a page refresh doesn't sign the
 // user out. The token's expiry (ACCESS_TOKEN_EXPIRE_MINUTES on the backend)
-// is checked on load, and any 401 from the API signs out automatically.
+// is checked on load, and any 401 from the server signs out automatically.
 // ============================================================
 const AuthContext = createContext(null);
 function useAuth() { return useContext(AuthContext); }
@@ -104,10 +104,10 @@ function AuthProvider({ children }) {
     return next;
   };
   const login = async (email, password) =>
-    startSession(await apiFetch("/auth/login", { method: "POST", body: { email, password } }));
+    startSession(await callServer("/auth/login", { method: "POST", body: { email, password } }));
   // `credential` is the ID token Google Identity Services gives the browser.
   const loginWithGoogle = async (credential) =>
-    startSession(await apiFetch("/auth/google", { method: "POST", body: { credential } }));
+    startSession(await callServer("/auth/google", { method: "POST", body: { credential } }));
   // Super Admin can change an Admin's visible pages at any time - re-sync.
   const setHiddenPages = (hiddenPages) =>
     setAuth((a) => {
@@ -140,7 +140,7 @@ function AuthProvider({ children }) {
  * GET a list endpoint; refetches when path/params/token change or reload() is called.
  * refreshMs: also re-fetch silently every N ms (no loading flash) — for live data.
  */
-function useApiList(path, { params, enabled = true, refreshMs } = {}) {
+function useServerList(path, { params, enabled = true, refreshMs } = {}) {
   const { token } = useAuth();
   const [state, setState] = useState({ data: [], loading: true, error: null });
   const [reloadKey, setReloadKey] = useState(0);
@@ -150,7 +150,7 @@ function useApiList(path, { params, enabled = true, refreshMs } = {}) {
     if (!enabled || !token) return;
     let cancelled = false;
     setState((s) => ({ ...s, loading: true, error: null }));
-    apiFetch(path, { token, params }).then(
+    callServer(path, { token, params }).then(
       (data) => { if (!cancelled) setState({ data, loading: false, error: null }); },
       (err) => { if (!cancelled) setState({ data: [], loading: false, error: err.message }); }
     );
@@ -167,7 +167,7 @@ function useApiList(path, { params, enabled = true, refreshMs } = {}) {
   useEffect(() => {
     if (!tick || !token) return;
     let cancelled = false;
-    apiFetch(path, { token, params }).then((data) => { if (!cancelled) setState((s) => ({ ...s, data, error: null })); }, () => {});
+    callServer(path, { token, params }).then((data) => { if (!cancelled) setState((s) => ({ ...s, data, error: null })); }, () => {});
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tick]);
@@ -372,6 +372,114 @@ function StatusPill({ status }) {
   );
 }
 
+const CONNECTION = {
+  connected: [C.jade, C.jadeSoft, "Connected"],
+  attention: [C.amber, C.amberSoft, "Needs attention"],
+  disconnected: [C.rust, C.rustSoft, "Disconnected"],
+  unknown: [C.gray, C.graySoft, "Checking…"],
+  not_linked: [C.gray, C.graySoft, "Not linked"],
+  demo: [C.amber, C.amberSoft, "Demo"],
+};
+function ConnectionPill({ connection }) {
+  const [fg, bg, label] = CONNECTION[connection] || CONNECTION.unknown;
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-medium" style={{ fontFamily: F.b, color: fg, background: bg, borderRadius: 6 }}>
+      <CircleDot size={9} color={fg} />{label}
+    </span>
+  );
+}
+/** Real-time connection state of every number, re-checked with the WhatsApp service every 10 s. */
+function useLiveNumbers() {
+  return useServerList("/numbers/live-status", { refreshMs: 10000 });
+}
+
+function LiveConnections({ live }) {
+  const rows = [...live.data].sort((a, b) => (a.connection === "connected") - (b.connection === "connected"));
+  const connected = live.data.filter((n) => n.connection === "connected").length;
+  const problems = live.data.filter((n) => n.connection === "attention" || n.connection === "disconnected").length;
+  const lastChecked = live.data[0]?.checked_at;
+  return (
+    <div className="mb-6">
+      <div className="flex items-center justify-between mb-2.5">
+        <div className="flex items-center gap-2 text-[13px] font-semibold" style={{ fontFamily: F.d, color: C.ink }}>
+          <span className="relay-live-dot" style={{ width: 8, height: 8, borderRadius: 4, background: live.error ? C.rust : C.jade, display: "inline-block" }} />
+          Live WhatsApp connections
+        </div>
+        <div className="text-[11.5px]" style={{ fontFamily: F.b, color: C.inkFaint }}>
+          {live.error ? "Could not refresh" : `${connected} of ${live.data.length} connected${problems ? ` · ${problems} need attention` : ""} · updates every 10 s${lastChecked ? ` · ${fmtDateTime(lastChecked)}` : ""}`}
+        </div>
+      </div>
+      {live.error && <ErrorBanner message={live.error} onRetry={live.reload} />}
+      {!live.error && live.loading && <TableSkeleton rows={3} />}
+      {!live.error && !live.loading && (
+        <>
+          <Table columns={["Number", "Name", "Connection"]}>
+            {rows.slice(0, 10).map((n) => (
+              <tr key={n.id}>
+                <Td mono>{n.phone}</Td>
+                <Td>{n.display_name}</Td>
+                <Td><ConnectionPill connection={n.connection} /></Td>
+              </tr>
+            ))}
+          </Table>
+          {live.data.length > 10 && <div className="text-[11.5px] mt-2" style={{ fontFamily: F.b, color: C.inkFaint }}>Showing 10 of {live.data.length} (problems first) — all numbers on the WhatsApp Numbers page.</div>}
+          {live.data.length === 0 && <div className="text-[12px] mt-2" style={{ fontFamily: F.b, color: C.inkSoft }}>No numbers connected yet.</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ChangePasswordModal({ onClose }) {
+  const { token } = useAuth();
+  const [form, setForm] = useState({ current: "", next: "", confirm: "" });
+  const [error, setError] = useState(null);
+  const [done, setDone] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const tooShort = form.next.length > 0 && form.next.length < 8;
+  const mismatch = form.confirm.length > 0 && form.confirm !== form.next;
+  const valid = form.current && form.next.length >= 8 && form.next === form.confirm;
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!valid) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await callServer("/auth/change-password", { method: "POST", token, body: { current_password: form.current, new_password: form.next } });
+      setDone(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal title="Change password" onClose={onClose}>
+      {done ? (
+        <>
+          <div className="text-[12.5px] mb-4" style={{ fontFamily: F.b, color: C.ink }}>Your password was changed. Use the new one next time you sign in.</div>
+          <PrimaryBtn onClick={onClose}>Done</PrimaryBtn>
+        </>
+      ) : (
+        <form onSubmit={submit}>
+          <Field label="Current password"><input style={inputStyle} type="password" autoComplete="current-password" value={form.current} onChange={(e) => setForm({ ...form, current: e.target.value })} autoFocus /></Field>
+          <Field label="New password"><input style={inputStyle} type="password" autoComplete="new-password" placeholder="At least 8 characters" value={form.next} onChange={(e) => setForm({ ...form, next: e.target.value })} /></Field>
+          {tooShort && <div className="text-[11.5px] -mt-2 mb-3" style={{ fontFamily: F.b, color: C.rust }}>Use at least 8 characters.</div>}
+          <Field label="Confirm new password"><input style={inputStyle} type="password" autoComplete="new-password" value={form.confirm} onChange={(e) => setForm({ ...form, confirm: e.target.value })} /></Field>
+          {mismatch && <div className="text-[11.5px] -mt-2 mb-3" style={{ fontFamily: F.b, color: C.rust }}>The two new passwords don't match.</div>}
+          {error && <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.rust }}>{error}</div>}
+          <div className="flex gap-2 mt-4">
+            <GhostBtn onClick={onClose}>Cancel</GhostBtn>
+            <button type="submit" disabled={!valid || submitting} className="px-4 py-2 text-[12.5px] font-medium text-white" style={{ fontFamily: F.b, background: !valid || submitting ? C.gray : C.jade, borderRadius: 7, opacity: !valid || submitting ? 0.7 : 1 }}>{submitting ? "Saving..." : "Change password"}</button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  );
+}
+
 function KpiCard({ label, value, accent, sub }) {
   return (
     <div className="relay-kpi-card flex-1 min-w-[150px] px-4 py-3.5" style={{ background: C.panel, border: `1px solid ${C.hairline}`, borderRadius: 8, borderLeft: `2.5px solid ${accent}` }}>
@@ -550,7 +658,7 @@ function LoginScreen() {
 
   useEffect(() => {
     let cancelled = false;
-    apiFetch("/auth/config").then(
+    callServer("/auth/config").then(
       (cfg) => { if (!cancelled) setGoogleClientId(cfg.google_client_id || null); },
       () => { /* backend down — the password form will show that error on submit */ }
     );
@@ -637,7 +745,6 @@ const NAV_ADMIN = [
   { key: "automations", label: "Automations", icon: Workflow },
   { key: "chatbot", label: "Chatbot", icon: Bot },
   { key: "analytics", label: "Analytics", icon: BarChart3 },
-  { key: "settings", label: "Settings", icon: SettingsIcon },
 ];
 const NAV_SUPER = [
   { key: "dashboard", label: "Dashboard", icon: LayoutGrid },
@@ -650,7 +757,6 @@ const NAV_SUPER = [
   { key: "chatbot", label: "Chatbot", icon: Bot },
   { key: "analytics", label: "Analytics", icon: BarChart3 },
   { key: "activity", label: "Activity Logs", icon: ScrollText },
-  { key: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
 function Sidebar({ role, page, setPage, collapsed, setCollapsed, mobileOpen, setMobileOpen }) {
@@ -769,6 +875,7 @@ function Topbar({ onMenu }) {
   const { role, name, logout } = useAuth();
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [pwOpen, setPwOpen] = useState(false);
   return (
     <div className="relay-topbar flex items-center justify-between px-5 py-3 shrink-0" style={{ background: C.panel, borderBottom: `1px solid ${C.hairline}`, position: "relative", zIndex: 30 }}>
       <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -814,11 +921,13 @@ function Topbar({ onMenu }) {
                 <div className="text-[12px] font-medium" style={{ fontFamily: F.b, color: C.ink }}>{name}</div>
                 <div className="text-[10.5px]" style={{ fontFamily: F.b, color: C.inkFaint }}>{role === "super_admin" ? "Super Admin" : "Admin"}</div>
               </div>
+              <button type="button" onClick={() => { setProfileOpen(false); setPwOpen(true); }} className="w-full text-left px-2 py-2 text-[11.5px]" style={{ fontFamily: F.b, color: C.ink, borderRadius: 6 }}>Change password</button>
               <button type="button" onClick={logout} className="w-full text-left px-2 py-2 text-[11.5px]" style={{ fontFamily: F.b, color: C.rust, borderRadius: 6 }}>Sign out</button>
             </div>
           )}
         </div>
       </div>
+      {pwOpen && <ChangePasswordModal onClose={() => setPwOpen(false)} />}
     </div>
   );
 }
@@ -827,9 +936,10 @@ function Topbar({ onMenu }) {
 // DASHBOARDS
 // ============================================================
 function SuperAdminDashboard() {
-  const admins = useApiList("/admins");
-  const numbers = useApiList("/numbers");
-  const summary = useApiList("/analytics/summary");
+  const admins = useServerList("/admins");
+  const numbers = useServerList("/numbers");
+  const summary = useServerList("/analytics/summary");
+  const live = useLiveNumbers();
 
   if (admins.error || numbers.error || summary.error) {
     return <ErrorBanner message={admins.error || numbers.error || summary.error} onRetry={() => { admins.reload(); numbers.reload(); summary.reload(); }} />;
@@ -855,6 +965,8 @@ function SuperAdminDashboard() {
         <KpiCard label="Failed" value={s.failed.toLocaleString()} accent={C.rust} />
         <KpiCard label="Conversion Rate" value={`${s.conversion_rate}%`} accent={C.jade} />
       </div>
+
+      <LiveConnections live={live} />
 
       <div className="text-[13px] font-semibold mb-2.5" style={{ fontFamily: F.d, color: C.ink }}>Admin performance</div>
       <Table columns={["Admin", "Numbers", "Sent", "Replies", "Leads", "Conversion", "Status"]}>
@@ -890,9 +1002,9 @@ function SuperAdminDashboard() {
 }
 
 function AdminDashboard() {
-  const numbers = useApiList("/numbers");
-  const automations = useApiList("/automations");
-  const summary = useApiList("/analytics/summary");
+  const numbers = useServerList("/numbers");
+  const automations = useServerList("/automations");
+  const summary = useServerList("/analytics/summary");
 
   if (numbers.error || automations.error || summary.error) {
     return <ErrorBanner message={numbers.error || automations.error || summary.error} onRetry={() => { numbers.reload(); automations.reload(); summary.reload(); }} />;
@@ -942,43 +1054,41 @@ function AdminDashboard() {
 // ============================================================
 // WHATSAPP NUMBERS
 // ============================================================
-function NumbersPage({ role }) {
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [showAdd, setShowAdd] = useState(false);
-  const [showLink, setShowLink] = useState(false);
+function NumbersPage({ onOpenNumber }) {
   const [pageNum, setPageNum] = useState(1);
   const perPage = 10;
 
-  const numbers = useApiList("/numbers", { params: { status: statusFilter === "all" ? undefined : statusFilter } });
-  const admins = useApiList("/admins", { enabled: role === "super_admin" });
+  const numbers = useServerList("/numbers", { refreshMs: 15000 });
+  const live = useLiveNumbers();
+  const liveById = Object.fromEntries(live.data.map((l) => [l.id, l.connection]));
 
   const totalPages = Math.max(1, Math.ceil(numbers.data.length / perPage));
   const paged = numbers.data.slice((pageNum - 1) * perPage, pageNum * perPage);
+  const open = (id) => onOpenNumber(id);
 
   return (
     <div>
-      <PageHeader title="WhatsApp Numbers" desc={numbers.loading ? "Loading..." : `${numbers.data.length} numbers connected`} action={role === "super_admin" && <div className="flex gap-2"><GhostBtn onClick={() => setShowLink(true)}>Link via Unipile</GhostBtn><PrimaryBtn onClick={() => setShowAdd(true)}><span className="flex items-center gap-1.5"><Plus size={13} /> Add number</span></PrimaryBtn></div>} />
-
-      <div className="flex gap-1.5 mb-3">
-        {["all", "active", "warning", "error", "inactive"].map((s) => (
-          <button key={s} onClick={() => { setStatusFilter(s); setPageNum(1); }} className="text-[11.5px] px-3 py-1.5 font-medium capitalize" style={{ fontFamily: F.b, borderRadius: 6, color: statusFilter === s ? "white" : C.inkSoft, background: statusFilter === s ? C.ink : C.panel, border: `1px solid ${statusFilter === s ? C.ink : C.hairline}` }}>{s}</button>
-        ))}
-      </div>
+      <PageHeader title="WhatsApp Numbers" desc={numbers.loading ? "Loading..." : `${numbers.data.length} numbers connected · click a number to open its chats`} />
 
       {numbers.error && <ErrorBanner message={numbers.error} onRetry={numbers.reload} />}
-      {numbers.loading && <TableSkeleton rows={8} />}
-      {!numbers.loading && !numbers.error && (
+      {numbers.loading && <TableSkeleton rows={5} />}
+      {!numbers.loading && !numbers.error && numbers.data.length === 0 && (
+        <div style={{ background: C.panel, border: `1px solid ${C.hairline}`, borderRadius: 8 }}>
+          <EmptyState icon={Phone} title="No numbers yet" desc="Your connected WhatsApp numbers show up here automatically." />
+        </div>
+      )}
+      {!numbers.loading && !numbers.error && numbers.data.length > 0 && (
         <>
-          <Table columns={["Phone Number", "Display Name", "Status", "Messages Today", "Delivery Rate", "Reply Rate", "Last Activity"]}>
+          <Table columns={["Phone Number", "Display Name", "Connection", "Chats", "Unread", "Last Activity", ""]}>
             {paged.map((n) => (
-              <tr key={n.id}>
+              <tr key={n.id} onClick={() => open(n.id)} onKeyDown={(e) => { if (e.key === "Enter") open(n.id); }} tabIndex={0} role="button" style={{ cursor: "pointer" }} title="Open this number's chats">
                 <Td mono>{n.phone}</Td>
                 <Td>{n.display_name}</Td>
-                <Td><StatusPill status={n.status} /></Td>
-                <Td mono>{n.messages_today.toLocaleString()}</Td>
-                <Td mono>{n.delivery_rate}%</Td>
-                <Td mono>{n.reply_rate}%</Td>
+                <Td><ConnectionPill connection={liveById[n.id] || "unknown"} /></Td>
+                <Td mono>{(n.chats || 0).toLocaleString()}</Td>
+                <Td mono>{n.unread > 0 ? <span style={{ color: C.jade, fontWeight: 600 }}>{n.unread}</span> : 0}</Td>
                 <Td>{fmtDateTime(n.last_activity_at)}</Td>
+                <Td><span className="inline-flex items-center gap-1 text-[11.5px] font-medium" style={{ fontFamily: F.b, color: C.jade }}>Open chats <ChevronRight size={13} /></span></Td>
               </tr>
             ))}
           </Table>
@@ -991,122 +1101,7 @@ function NumbersPage({ role }) {
           </div>
         </>
       )}
-
-      {showAdd && (
-        <AddNumberModal admins={admins.data} onClose={() => setShowAdd(false)} onAdded={() => { setShowAdd(false); numbers.reload(); }} />
-      )}
-      {showLink && (
-        <UnipileLinkModal admins={admins.data} onClose={() => setShowLink(false)} onLinked={() => { setShowLink(false); numbers.reload(); }} />
-      )}
     </div>
-  );
-}
-
-// Links a WhatsApp number through Unipile: opens Unipile's hosted QR / pairing
-// page in a new tab, then polls /numbers until the new number shows up.
-function UnipileLinkModal({ admins, onClose, onLinked }) {
-  const { token } = useAuth();
-  const [form, setForm] = useState({ display_name: "", admin_id: admins[0]?.id || "" });
-  const [error, setError] = useState(null);
-  const [waiting, setWaiting] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const knownIds = useRef(null);
-  const onLinkedRef = useRef(onLinked);
-  useEffect(() => { onLinkedRef.current = onLinked; });
-
-  useEffect(() => {
-    if (!waiting) return;
-    let stopped = false;
-    const poll = async () => {
-      try {
-        const list = await apiFetch("/numbers", { token });
-        if (stopped) return;
-        if (list.some((n) => n.unipile_account_id && !knownIds.current.has(n.unipile_account_id))) onLinkedRef.current();
-      } catch { /* keep polling */ }
-    };
-    const t = setInterval(poll, 3000);
-    return () => { stopped = true; clearInterval(t); };
-  }, [waiting, token]);
-
-  const start = async () => {
-    setSubmitting(true);
-    setError(null);
-    try {
-      const existing = await apiFetch("/numbers", { token });
-      knownIds.current = new Set(existing.map((n) => n.unipile_account_id).filter(Boolean));
-      const { link } = await apiFetch("/unipile/link", { method: "POST", token, body: form });
-      window.open(link, "_blank", "noopener");
-      setWaiting(true);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <Modal title="Link WhatsApp via Unipile" onClose={onClose}>
-      {!waiting ? (
-        <>
-          <Field label="Display name"><input style={inputStyle} placeholder="Sales Line — Mumbai" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} /></Field>
-          <Field label="Assigned admin">
-            <select style={inputStyle} value={form.admin_id} onChange={(e) => setForm({ ...form, admin_id: e.target.value })}>
-              {admins.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
-          </Field>
-          <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.inkSoft }}>A Unipile page opens in a new tab. On the phone: WhatsApp → Linked devices → Link a device, then scan the QR code (or use the pairing code).</div>
-          {error && <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.rust }}>{error}</div>}
-          <div className="flex gap-2 mt-4">
-            <GhostBtn onClick={onClose}>Cancel</GhostBtn>
-            <PrimaryBtn disabled={submitting || !form.admin_id} onClick={start}>{submitting ? "Preparing..." : "Open link page"}</PrimaryBtn>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="text-[12.5px] mb-4" style={{ fontFamily: F.b, color: C.ink }}>Waiting for you to finish linking in the other tab… this closes automatically once the number is connected.</div>
-          <div className="flex gap-2 mt-4"><GhostBtn onClick={onClose}>Close</GhostBtn></div>
-        </>
-      )}
-    </Modal>
-  );
-}
-
-function AddNumberModal({ admins, onClose, onAdded }) {
-  const { token } = useAuth();
-  const [form, setForm] = useState({ phone: "", display_name: "", waba_id: "", phone_number_id: "", admin_id: admins[0]?.id || "" });
-  const [error, setError] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const submit = async () => {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await apiFetch("/numbers", { method: "POST", token, body: form });
-      onAdded();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <Modal title="Add WhatsApp number" onClose={onClose}>
-      <Field label="Phone number"><input style={inputStyle} placeholder="+91 98XXXXXXXX" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
-      <Field label="Display name"><input style={inputStyle} placeholder="Sales Line — Mumbai" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} /></Field>
-      <Field label="WhatsApp Business Account ID"><input style={inputStyle} placeholder="WABA ID" value={form.waba_id} onChange={(e) => setForm({ ...form, waba_id: e.target.value })} /></Field>
-      <Field label="Phone Number ID"><input style={inputStyle} placeholder="Meta phone number ID" value={form.phone_number_id} onChange={(e) => setForm({ ...form, phone_number_id: e.target.value })} /></Field>
-      <Field label="Assigned admin">
-        <select style={inputStyle} value={form.admin_id} onChange={(e) => setForm({ ...form, admin_id: e.target.value })}>
-          {admins.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </select>
-      </Field>
-      {error && <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.rust }}>{error}</div>}
-      <div className="flex gap-2 mt-4">
-        <GhostBtn onClick={onClose}>Cancel</GhostBtn>
-        <PrimaryBtn disabled={submitting || !form.phone || !form.admin_id} onClick={submit}>{submitting ? "Adding..." : "Add number"}</PrimaryBtn>
-      </div>
-    </Modal>
   );
 }
 
@@ -1114,7 +1109,7 @@ function AddNumberModal({ admins, onClose, onAdded }) {
 // ADMINS PAGE (super admin only)
 // ============================================================
 function AdminsPage() {
-  const admins = useApiList("/admins");
+  const admins = useServerList("/admins");
   const { token } = useAuth();
   const [showAdd, setShowAdd] = useState(false);
   const [pagesFor, setPagesFor] = useState(null);
@@ -1124,7 +1119,7 @@ function AdminsPage() {
 
   const confirmDeleteAll = async () => {
     try {
-      await apiFetch("/admins", { method: "DELETE", token });
+      await callServer("/admins", { method: "DELETE", token });
     } catch (err) {
       setActionError(err.message);
     }
@@ -1134,7 +1129,7 @@ function AdminsPage() {
 
   const confirmDelete = async () => {
     try {
-      await apiFetch(`/admins/${deleting.id}`, { method: "DELETE", token });
+      await callServer(`/admins/${deleting.id}`, { method: "DELETE", token });
       setDeleting(null);
       admins.reload();
     } catch (err) {
@@ -1224,7 +1219,7 @@ function AdminPagesModal({ admin, onClose, onSaved }) {
     setSaving(true);
     setError(null);
     try {
-      await apiFetch(`/admins/${admin.id}`, { method: "PATCH", token, body: { hidden_pages: hidden } });
+      await callServer(`/admins/${admin.id}`, { method: "PATCH", token, body: { hidden_pages: hidden } });
       onSaved();
     } catch (err) {
       setError(err.message);
@@ -1261,7 +1256,7 @@ function AddAdminModal({ onClose, onAdded }) {
     setSubmitting(true);
     setError(null);
     try {
-      await apiFetch("/admins", { method: "POST", token, body: form });
+      await callServer("/admins", { method: "POST", token, body: form });
       onAdded();
     } catch (err) {
       setError(err.message);
@@ -1372,7 +1367,7 @@ function Bubble({ msg }) {
         {failed && (
           <div className="text-[10.5px] mt-0.5 text-right" style={{ fontFamily: F.b, color: C.rust }}>
             Not delivered{msg.error_message ? `: ${msg.error_message}` : ""}
-            {msg.error_code && <> (<a href={`https://www.twilio.com/docs/api/errors/${msg.error_code}`} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>error {msg.error_code}</a>)</>}
+            {msg.error_code && <> (error {msg.error_code})</>}
           </div>
         )}
       </div>
@@ -1435,7 +1430,7 @@ function TemplateModal({ onClose, onSend }) {
     <Modal title="Send WhatsApp template" onClose={onClose} width={460}>
       <div className="text-[11.5px] mb-3 px-3 py-2" style={{ fontFamily: F.b, color: C.inkSoft, background: C.panelDeep, borderRadius: 6 }}>
         Templates are pre-approved messages — the only kind WhatsApp delivers when the customer hasn't written in the last 24 hours.
-        Create one in Twilio Console → Messaging → Content Template Builder and copy its <b>Content SID</b> (starts with HX).
+        Paste the <b>template ID</b> (starts with HX) of an approved template.
       </div>
       <Field label="Content SID"><input style={inputStyle} placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" value={sid} onChange={(e) => setSid(e.target.value)} /></Field>
       <Field label="Template variables"><TemplateVariablesEditor vars={vars} setVars={setVars} /></Field>
@@ -1444,14 +1439,14 @@ function TemplateModal({ onClose, onSend }) {
   );
 }
 
-/** Which provider is live (mock / twilio) + webhook URLs. Fetched once per session. */
+/** Whether sending is live or in demo mode. Fetched once per session. */
 let waStatusCache = null;
 function useWhatsAppStatus() {
   const { token } = useAuth();
   const [status, setStatus] = useState(waStatusCache);
   useEffect(() => {
     if (waStatusCache || !token) return;
-    apiFetch("/system/whatsapp", { token }).then((s) => { waStatusCache = s; setStatus(s); }, () => {});
+    callServer("/system/whatsapp", { token }).then((s) => { waStatusCache = s; setStatus(s); }, () => {});
   }, [token]);
   return status;
 }
@@ -1466,7 +1461,7 @@ function CustomerPanel({ contact }) {
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
-    apiFetch(`/contacts/${contact.id}`, { token }).then(
+    callServer(`/contacts/${contact.id}`, { token }).then(
       (c) => { if (!cancelled) setFull(c); },
       () => { if (!cancelled) setFull(null); }
     );
@@ -1477,7 +1472,7 @@ function CustomerPanel({ contact }) {
     if (!note.trim()) return;
     setNoteError(null);
     try {
-      const updated = await apiFetch(`/contacts/${contact.id}/notes`, { method: "POST", token, body: { note: note.trim() } });
+      const updated = await callServer(`/contacts/${contact.id}/notes`, { method: "POST", token, body: { note: note.trim() } });
       setFull(updated);
       setShowNote(false);
       setNote("");
@@ -1524,13 +1519,15 @@ function CustomerPanel({ contact }) {
   );
 }
 
-function InboxPage() {
+function InboxPage({ numberId, onNumberChange }) {
   const { token } = useAuth();
   const wa = useWhatsAppStatus();
   const live = !!wa?.live;
   const [filter, setFilter] = useState("all");
   // Refreshes every 5 s so messages arriving via the Twilio webhook show up.
-  const conversations = useApiList("/inbox/conversations", { params: { status: filter === "all" ? undefined : filter }, refreshMs: 5000 });
+  const conversations = useServerList("/inbox/conversations", { params: { status: filter === "all" ? undefined : filter, number_id: numberId || undefined }, refreshMs: 5000 });
+  const numbers = useServerList("/numbers", { refreshMs: 15000 });
+  const totalUnread = numbers.data.reduce((sum, n) => sum + (n.unread || 0), 0);
   const [activeConvId, setActiveConvId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -1541,6 +1538,9 @@ function InboxPage() {
   const [mobileThreadOpen, setMobileThreadOpen] = useState(false);
   const threadRef = useRef(null);
   const lastCountRef = useRef(0);
+
+  // switching number: forget the open chat so the first chat of the new list opens
+  useEffect(() => { setActiveConvId(null); setDetail(null); }, [numberId]);
 
   // pick the first conversation once the list loads
   useEffect(() => {
@@ -1553,7 +1553,7 @@ function InboxPage() {
     let cancelled = false;
     setDetailLoading(true);
     setSendError(null);
-    const load = (first) => apiFetch(`/inbox/conversations/${activeConvId}`, { token }).then(
+    const load = (first) => callServer(`/inbox/conversations/${activeConvId}`, { token }).then(
       (d) => { if (!cancelled) { setDetail(d); if (first) setDetailLoading(false); } },
       () => { if (!cancelled && first) setDetailLoading(false); }
     );
@@ -1575,8 +1575,8 @@ function InboxPage() {
     setSendError(null);
     setComposerMode(null);
     try {
-      const msg = await apiFetch(`/inbox/conversations/${activeConvId}/messages`, { method: "POST", token, body: payload });
-      const fresh = await apiFetch(`/inbox/conversations/${activeConvId}`, { token });
+      const msg = await callServer(`/inbox/conversations/${activeConvId}/messages`, { method: "POST", token, body: payload });
+      const fresh = await callServer(`/inbox/conversations/${activeConvId}`, { token });
       setDetail(fresh);
       if (payload.type === "text" && !payload.content_sid) setDraft("");
       if (msg.status === "failed") setSendError(`WhatsApp rejected the message${msg.error_message ? `: ${msg.error_message}` : ""}`);
@@ -1596,13 +1596,19 @@ function InboxPage() {
   return (
     <div className={`relay-inbox flex${mobileThreadOpen ? " relay-inbox-show-thread" : ""}`} style={{ height: "calc(100vh - 108px)", background: C.panel, border: `1px solid ${C.hairline}`, borderRadius: 8, overflow: "hidden" }}>
       <div className="relay-inbox-list flex flex-col shrink-0" style={{ width: 300, borderRight: `1px solid ${C.hairline}` }}>
+        <div className="px-3.5 pt-3.5">
+          <select value={numberId || ""} onChange={(e) => onNumberChange(e.target.value || null)} aria-label="Filter by WhatsApp number" style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }}>
+            <option value="">All numbers{totalUnread ? ` · ${totalUnread} unread` : ""}</option>
+            {numbers.data.map((n) => <option key={n.id} value={n.id}>{n.display_name}{n.unread ? ` · ${n.unread} unread` : ""}</option>)}
+          </select>
+        </div>
         <div className="px-3.5 pt-3.5 pb-2.5 flex items-center justify-between gap-2">
           <div className="flex gap-1">
             {[["all", "All"], ["needs_human", "Needs human"], ["bot", "Bot"]].map(([k, l]) => (
               <button key={k} onClick={() => setFilter(k)} className="text-[11px] px-2 py-1 font-medium" style={{ fontFamily: F.b, borderRadius: 5, color: filter === k ? "white" : C.inkSoft, background: filter === k ? C.ink : "transparent" }}>{l}</button>
             ))}
           </div>
-          <span className="text-[10px] px-1.5 py-0.5 shrink-0" title={live ? "Messages really go out over WhatsApp" : "Demo mode — nothing is really sent"} style={{ fontFamily: F.b, color: live ? C.jade : C.amber, background: live ? C.jadeSoft : C.amberSoft, borderRadius: 4 }}>{live ? "Live · Twilio" : "Demo mode"}</span>
+          <span className="text-[10px] px-1.5 py-0.5 shrink-0" title={live ? "Messages really go out over WhatsApp" : "Demo mode — nothing is really sent"} style={{ fontFamily: F.b, color: live ? C.jade : C.amber, background: live ? C.jadeSoft : C.amberSoft, borderRadius: 4 }}>{live ? "Live" : "Demo mode"}</span>
         </div>
         <div className="flex-1 overflow-y-auto">
           {conversations.loading && <div className="px-3.5 py-6 text-[12px]" style={{ fontFamily: F.b, color: C.inkFaint }}>Loading conversations...</div>}
@@ -1620,6 +1626,7 @@ function InboxPage() {
                   <div className="flex items-center gap-1.5">
                     <span className="w-[6px] h-[6px] rounded-full shrink-0" style={{ background: statusColor[c.status] }} />
                     <span className="text-[11.5px] truncate" style={{ fontFamily: F.b, color: C.inkSoft }}>{c.contact.phone}</span>
+                    {!numberId && <span className="text-[9.5px] px-1.5 py-0.5 shrink-0 truncate text-white" style={{ fontFamily: F.b, background: colorForId(c.whatsapp_number_id), borderRadius: 4, maxWidth: 96 }} title={`via ${c.whatsapp_number_name || c.whatsapp_number_phone}`}>{c.whatsapp_number_name || c.whatsapp_number_phone}</span>}
                   </div>
                 </div>
                 {c.unread_count > 0 && <span className="text-[10px] font-semibold text-white w-[16px] h-[16px] flex items-center justify-center shrink-0 mt-0.5" style={{ background: C.jade, borderRadius: 4, fontFamily: F.m }}>{c.unread_count}</span>}
@@ -1640,7 +1647,7 @@ function InboxPage() {
                 <div className="w-8 h-8 flex items-center justify-center text-[11px] font-semibold text-white" style={{ background: colorForId(detail.contact.id), borderRadius: 7 }}>{initials(detail.contact.name)}</div>
                 <div>
                   <div className="text-[13px] font-medium" style={{ fontFamily: F.b, color: C.ink }}>{detail.contact.name}</div>
-                  <div className="text-[11px]" style={{ fontFamily: F.m, color: C.inkSoft }}>{detail.contact.phone} · via {detail.whatsapp_number_phone}</div>
+                  <div className="text-[11px]" style={{ fontFamily: F.m, color: C.inkSoft }}>{detail.contact.phone} · via {detail.whatsapp_number_name || detail.whatsapp_number_phone}</div>
                 </div>
               </div>
               {detail.status === "needs_human" && <span className="text-[10.5px] font-medium px-2 py-1" style={{ fontFamily: F.b, color: C.rust, background: C.rustSoft, borderRadius: 5 }}>Needs human</span>}
@@ -1830,7 +1837,7 @@ function ImportContactsModal({ numbers, onClose, onDone }) {
     setBusy(true);
     setError(null);
     try {
-      setResult(await apiFetch("/contacts/import", { method: "POST", token, body: { whatsapp_number_id: numberId, rows, tag: tag.trim() || null, default_country_code: cc, consent } }));
+      setResult(await callServer("/contacts/import", { method: "POST", token, body: { whatsapp_number_id: numberId, rows, tag: tag.trim() || null, default_country_code: cc, consent } }));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1887,13 +1894,13 @@ function CrmPage() {
   const [error, setError] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [showImport, setShowImport] = useState(false);
-  const numbers = useApiList("/numbers");
+  const numbers = useServerList("/numbers");
 
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
     setLoading(true);
-    apiFetch("/contacts", { token, params: { page: pageNum, per_page: 10, status: statusFilter === "all" ? undefined : statusFilter, search: search || undefined } })
+    callServer("/contacts", { token, params: { page: pageNum, per_page: 10, status: statusFilter === "all" ? undefined : statusFilter, search: search || undefined } })
       .then((d) => { if (!cancelled) { setResult(d); setError(null); } })
       .catch((e) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -1996,7 +2003,7 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
     try {
       const stamp = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
       const tag = `Campaign: ${form.name.trim() || "list"} ${stamp}`.slice(0, 60);
-      const res = await apiFetch("/contacts/import", { method: "POST", token, body: { whatsapp_number_id: form.whatsapp_number_id, rows: listRows, tag, consent: form.listConsent } });
+      const res = await callServer("/contacts/import", { method: "POST", token, body: { whatsapp_number_id: form.whatsapp_number_id, rows: listRows, tag, consent: form.listConsent } });
       set({ listTag: res.tag, listResult: res });
     } catch (err) {
       setError(err.message);
@@ -2011,7 +2018,7 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
     if (!form.whatsapp_number_id || !token) return;
     let cancelled = false;
     const t = setTimeout(() => {
-      apiFetch("/campaigns/audience-preview", { method: "POST", token, body: { whatsapp_number_id: form.whatsapp_number_id, audience_filter: JSON.parse(filterKey) } })
+      callServer("/campaigns/audience-preview", { method: "POST", token, body: { whatsapp_number_id: form.whatsapp_number_id, audience_filter: JSON.parse(filterKey) } })
         .then((p) => { if (!cancelled) setPreview(p); }, () => { if (!cancelled) setPreview(null); });
     }, 250);
     return () => { cancelled = true; clearTimeout(t); };
@@ -2037,8 +2044,8 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
         content_sid: form.useTemplate ? form.content_sid.trim() : null,
         content_variables: form.useTemplate ? varsToObject(vars) || null : null,
       };
-      const created = await apiFetch("/campaigns", { method: "POST", token, body });
-      await apiFetch(`/campaigns/${created.id}/launch`, { method: "POST", token });
+      const created = await callServer("/campaigns", { method: "POST", token, body });
+      await callServer(`/campaigns/${created.id}/launch`, { method: "POST", token });
       onCreated();
     } catch (err) {
       setError(err.message);
@@ -2075,7 +2082,7 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
               {numbers.map((n) => <option key={n.id} value={n.id}>{n.phone} — {n.display_name}</option>)}
             </select>
           </Field>
-          {live && <div className="text-[11px]" style={{ fontFamily: F.b, color: C.inkFaint }}>The number must be a WhatsApp sender in your Twilio account (for testing: the sandbox number +1 415 523 8886).</div>}
+          {live && <div className="text-[11px]" style={{ fontFamily: F.b, color: C.inkFaint }}>The number must be linked under WhatsApp Numbers.</div>}
         </>
       )}
 
@@ -2142,7 +2149,7 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
             </>
           ) : (
             <>
-              <Field label="Content SID (from Twilio Content Template Builder)"><input style={inputStyle} placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" value={form.content_sid} onChange={(e) => set({ content_sid: e.target.value })} /></Field>
+              <Field label="Template ID"><input style={inputStyle} placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" value={form.content_sid} onChange={(e) => set({ content_sid: e.target.value })} /></Field>
               <Field label="Template variables"><TemplateVariablesEditor vars={vars} setVars={setVars} /></Field>
               <div className="text-[11px]" style={{ fontFamily: F.b, color: C.inkFaint }}>You can use <code>{"{{name}}"}</code> as a value too, e.g. {"{{1}}"} = {"{{name}}"}.</div>
             </>
@@ -2156,7 +2163,7 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
             ["Audience", form.audienceMode === "all" ? "All contacts" : form.audienceMode === "status" ? `Status: ${form.status}` : form.audienceMode === "list" ? `Pasted list (${form.listTag})` : `Tag: ${form.tag || "—"}`],
             ["Recipients", shownPreview ? String(shownPreview.recipients) : "—"],
             ["Message", form.useTemplate ? `Template ${form.content_sid}` : form.message_type === "text" ? form.message_text : `${form.message_type}: ${form.media_url}`],
-            ["Delivery", live ? `Real WhatsApp via ${wa.provider === "wasender" ? "Wasender" : wa.provider === "twilio" ? "Twilio" : wa.provider} · ~${wa.send_interval_seconds}s between messages` : "Demo mode — nothing is really sent"],
+            ["Delivery", live ? `Real WhatsApp · ~${wa.send_interval_seconds}s between messages` : "Demo mode — nothing is really sent"],
           ].map(([k, v]) => (
             <div key={k} className="flex items-start justify-between gap-4 py-1.5" style={{ borderBottom: `1px solid ${C.hairlineSoft}` }}>
               <span className="text-[12px] shrink-0" style={{ fontFamily: F.b, color: C.inkSoft }}>{k}</span>
@@ -2179,8 +2186,8 @@ function CreateCampaignModal({ numbers, onClose, onCreated }) {
 
 function CampaignsPage() {
   const { token } = useAuth();
-  const campaigns = useApiList("/campaigns", { refreshMs: 3000 }); // live progress
-  const numbers = useApiList("/numbers");
+  const campaigns = useServerList("/campaigns", { refreshMs: 3000 }); // live progress
+  const numbers = useServerList("/numbers");
   const [showCreate, setShowCreate] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const [actionError, setActionError] = useState(null);
@@ -2189,8 +2196,8 @@ function CampaignsPage() {
     setBusyId(c.id);
     setActionError(null);
     try {
-      if (action === "pause") await apiFetch(`/campaigns/${c.id}`, { method: "PATCH", token, body: { status: "Paused" } });
-      else await apiFetch(`/campaigns/${c.id}/launch`, { method: "POST", token });
+      if (action === "pause") await callServer(`/campaigns/${c.id}`, { method: "PATCH", token, body: { status: "Paused" } });
+      else await callServer(`/campaigns/${c.id}/launch`, { method: "POST", token });
       campaigns.refresh();
     } catch (err) {
       setActionError(`${c.name}: ${err.message}`);
@@ -2259,7 +2266,7 @@ function FlowArrow() { return <div className="flex justify-center py-1"><ArrowDo
 
 function AutomationsPage() {
   const { token } = useAuth();
-  const automations = useApiList("/automations");
+  const automations = useServerList("/automations");
   const [openBuilder, setOpenBuilder] = useState(null);
   const [busy, setBusy] = useState(false);
   const [flowNodes, setFlowNodes] = useState([]);
@@ -2303,7 +2310,7 @@ function AutomationsPage() {
     const next = automation.status === "Running" ? "Paused" : "Running";
     setBusy(true);
     try {
-      const updated = await apiFetch(`/automations/${automation.id}`, { method: "PATCH", token, body: { status: next } });
+      const updated = await callServer(`/automations/${automation.id}`, { method: "PATCH", token, body: { status: next } });
       automations.reload();
       setOpenBuilder((current) => current?.id === automation.id ? { ...current, ...updated } : current);
     } catch (err) {
@@ -2317,7 +2324,7 @@ function AutomationsPage() {
     if (!openBuilder) return;
     setBusy(true);
     try {
-      const updated = await apiFetch(`/automations/${openBuilder.id}`, {
+      const updated = await callServer(`/automations/${openBuilder.id}`, {
         method: "PATCH",
         token,
         body: {
@@ -2564,7 +2571,7 @@ function AutomationsPage() {
 // CHATBOT — same pattern: list/status real, flow canvas illustrative.
 // ============================================================
 function ChatbotPage() {
-  const chatbots = useApiList("/chatbots");
+  const chatbots = useServerList("/chatbots");
   const [openBot, setOpenBot] = useState(null);
 
   if (openBot) {
@@ -2644,9 +2651,9 @@ function synthTimeSeries(seed) {
 }
 
 function AnalyticsPage() {
-  const summary = useApiList("/analytics/summary");
-  const funnel = useApiList("/analytics/funnel");
-  const campaigns = useApiList("/campaigns");
+  const summary = useServerList("/analytics/summary");
+  const funnel = useServerList("/analytics/funnel");
+  const campaigns = useServerList("/campaigns");
 
   if (summary.error) return <ErrorBanner message={summary.error} onRetry={() => { summary.reload(); funnel.reload(); campaigns.reload(); }} />;
   if (summary.loading || funnel.loading || campaigns.loading) return <TableSkeleton rows={6} />;
@@ -2714,88 +2721,8 @@ function AnalyticsPage() {
   );
 }
 
-// ============================================================
-// API KEYS — super admin only, values always masked.
-// ============================================================
-function ApiKeysPage() {
-  const { token } = useAuth();
-  const keys = useApiList("/api-keys");
-  const [showAdd, setShowAdd] = useState(false);
-  const [busyId, setBusyId] = useState(null);
-
-  const test = async (id) => {
-    setBusyId(id);
-    try { await apiFetch(`/api-keys/${id}/test`, { method: "POST", token }); keys.reload(); } finally { setBusyId(null); }
-  };
-  const remove = async (id) => {
-    setBusyId(id);
-    try { await apiFetch(`/api-keys/${id}`, { method: "DELETE", token }); keys.reload(); } finally { setBusyId(null); }
-  };
-
-  return (
-    <div>
-      <PageHeader title="API Keys" desc="Manage WhatsApp API provider connections" action={<PrimaryBtn onClick={() => setShowAdd(true)}><span className="flex items-center gap-1.5"><Plus size={13} /> Add API key</span></PrimaryBtn>} />
-      {keys.error && <ErrorBanner message={keys.error} onRetry={keys.reload} />}
-      {keys.loading && <TableSkeleton rows={2} />}
-      {!keys.loading && !keys.error && (
-        <div className="space-y-2.5">
-          {keys.data.map((k) => (
-            <div key={k.id} className="flex items-center justify-between px-4 py-3" style={{ background: C.panel, border: `1px solid ${C.hairline}`, borderRadius: 8 }}>
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 flex items-center justify-center" style={{ background: C.jadeSoft, borderRadius: 7 }}><Key size={14} color={C.jade} /></div>
-                <div><div className="text-[13px] font-medium" style={{ fontFamily: F.b, color: C.ink }}>{k.provider}</div><div className="text-[11.5px]" style={{ fontFamily: F.m, color: C.inkSoft }}>{k.masked}</div></div>
-              </div>
-              <div className="flex items-center gap-3">
-                <StatusPill status={k.status} />
-                <button disabled={busyId === k.id} onClick={() => test(k.id)} className="text-[11.5px] font-medium" style={{ fontFamily: F.b, color: C.jade }}>Test</button>
-                <button disabled={busyId === k.id} onClick={() => remove(k.id)} className="text-[11.5px] font-medium" style={{ fontFamily: F.b, color: C.rust }}>Remove</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      {showAdd && <AddApiKeyModal onClose={() => setShowAdd(false)} onAdded={() => { setShowAdd(false); keys.reload(); }} />}
-    </div>
-  );
-}
-
-function AddApiKeyModal({ onClose, onAdded }) {
-  const { token } = useAuth();
-  const [form, setForm] = useState({ provider: "Meta", api_key: "", business_account_id: "", phone_number_id: "" });
-  const [error, setError] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const submit = async () => {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await apiFetch("/api-keys", { method: "POST", token, body: form });
-      onAdded();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <Modal title="Add API key" onClose={onClose}>
-      <Field label="Provider">
-        <select style={inputStyle} value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })}>
-          <option>Meta</option><option>360dialog</option><option>Twilio</option><option>Gupshup</option>
-        </select>
-      </Field>
-      <Field label="API Key"><input style={inputStyle} type="password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder="Paste API key" /></Field>
-      <Field label="Business Account ID"><input style={inputStyle} value={form.business_account_id} onChange={(e) => setForm({ ...form, business_account_id: e.target.value })} placeholder="WABA ID" /></Field>
-      <Field label="Phone Number ID"><input style={inputStyle} value={form.phone_number_id} onChange={(e) => setForm({ ...form, phone_number_id: e.target.value })} placeholder="Phone number ID" /></Field>
-      {error && <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.rust }}>{error}</div>}
-      <div className="flex gap-2 mt-4"><GhostBtn onClick={onClose}>Cancel</GhostBtn><PrimaryBtn disabled={submitting || !form.api_key} onClick={submit}>{submitting ? "Saving..." : "Save & connect"}</PrimaryBtn></div>
-    </Modal>
-  );
-}
-
 function ActivityLogsPage() {
-  const logs = useApiList("/activity-logs", { params: { limit: 50 } });
+  const logs = useServerList("/activity-logs", { params: { limit: 50 } });
   return (
     <div>
       <PageHeader title="Activity Logs" desc="System-wide activity across all admins and numbers" />
@@ -2818,69 +2745,6 @@ function ActivityLogsPage() {
   );
 }
 
-/** Settings → WhatsApp: is Twilio live, and the webhook URLs to paste into Twilio. */
-function WhatsAppSettings() {
-  const wa = useWhatsAppStatus();
-  const [copied, setCopied] = useState(null);
-  if (!wa) return <TableSkeleton rows={3} />;
-  const copy = (label, text) => { navigator.clipboard?.writeText(text).then(() => { setCopied(label); setTimeout(() => setCopied(null), 1500); }, () => {}); };
-  const row = (label, value, ok) => (
-    <div className="flex items-center justify-between gap-4 py-2" style={{ borderBottom: `1px solid ${C.hairlineSoft}` }}>
-      <span className="text-[12px]" style={{ fontFamily: F.b, color: C.inkSoft }}>{label}</span>
-      <span className="text-[12px] font-medium flex items-center gap-1.5" style={{ fontFamily: F.b, color: ok === false ? C.rust : C.ink }}>{ok === true && <Check size={13} color={C.jade} />}{ok === false && <AlertCircle size={13} color={C.rust} />}{value}</span>
-    </div>
-  );
-  const urlRow = (label, url) => (
-    <div className="mb-3">
-      <div className="text-[11.5px] font-medium mb-1" style={{ fontFamily: F.b, color: C.inkSoft }}>{label}</div>
-      {url ? (
-        <div className="flex items-center gap-2">
-          <code className="flex-1 text-[11.5px] px-2.5 py-2 truncate" style={{ fontFamily: F.m, background: C.bg, border: `1px solid ${C.hairline}`, borderRadius: 6 }}>{url}</code>
-          <button onClick={() => copy(label, url)} className="flex items-center gap-1 text-[11.5px] px-2.5 py-2" style={{ fontFamily: F.b, color: C.jade, border: `1px solid ${C.jade}`, borderRadius: 6 }}><Copy size={12} />{copied === label ? "Copied" : "Copy"}</button>
-        </div>
-      ) : <div className="text-[11.5px]" style={{ fontFamily: F.b, color: C.inkFaint }}>Set PUBLIC_BASE_URL in the backend .env to get this URL.</div>}
-    </div>
-  );
-  return (
-    <div style={{ background: C.panel, border: `1px solid ${C.hairline}`, borderRadius: 8, maxWidth: 640 }} className="px-5 py-4">
-      {row("Sending mode", wa.live ? `Live — ${wa.provider}` : "Demo (mock) — nothing is really sent", wa.live)}
-      {wa.provider === "twilio" && row("Twilio credentials", wa.credentials_set ? `Set (${wa.account_sid_hint})` : "Missing — add TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN", wa.credentials_set)}
-      {row("Public URL (for webhooks)", wa.public_base_url || "Not set — replies & delivery ticks won't arrive", !!wa.public_base_url)}
-      {row("Campaign pace", `${wa.send_interval_seconds}s between messages`)}
-      <div className="text-[12.5px] font-semibold mt-5 mb-2" style={{ fontFamily: F.d, color: C.ink }}>Paste these into Twilio</div>
-      <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.inkSoft }}>Twilio Console → Messaging → Try it out → Send a WhatsApp message → <b>Sandbox settings</b> (or your WhatsApp sender's settings). Method: <b>POST</b>.</div>
-      {urlRow("When a message comes in", wa.inbound_webhook_url)}
-      {urlRow("Status callback URL", wa.status_webhook_url)}
-      {!wa.live && <div className="text-[11.5px] mt-3 px-3 py-2" style={{ fontFamily: F.b, color: C.ink, background: C.amberSoft, borderRadius: 6 }}>To go live: in the backend .env set <code>WHATSAPP_MOCK=false</code>, <code>WHATSAPP_PROVIDER=twilio</code> and your Twilio keys, then restart the backend.</div>}
-    </div>
-  );
-}
-
-function SettingsPage({ role }) {
-  const { name } = useAuth();
-  const [tab, setTab] = useState("profile");
-  const tabs = role === "super_admin"
-    ? [["profile", "Profile"], ["whatsapp", "WhatsApp"], ["apikeys", "API Keys"]]
-    : [["profile", "Profile"], ["whatsapp", "WhatsApp"]];
-
-  return (
-    <div>
-      <PageHeader title="Settings" />
-      <div className="flex gap-1.5 mb-4">
-        {tabs.map(([k, l]) => (
-          <button key={k} onClick={() => setTab(k)} className="text-[12px] px-3 py-1.5 font-medium" style={{ fontFamily: F.b, borderRadius: 6, color: tab === k ? "white" : C.inkSoft, background: tab === k ? C.ink : C.panel, border: `1px solid ${tab === k ? C.ink : C.hairline}` }}>{l}</button>
-        ))}
-      </div>
-      {tab === "whatsapp" ? <WhatsAppSettings /> : tab === "apikeys" ? <ApiKeysPage /> : (
-        <div style={{ background: C.panel, border: `1px solid ${C.hairline}`, borderRadius: 8, maxWidth: 420 }} className="px-5 py-4">
-          <Field label="Full name"><input style={inputStyle} defaultValue={name} disabled /></Field>
-          <div className="text-[11.5px]" style={{ fontFamily: F.b, color: C.inkFaint }}>Profile editing isn't wired to an update endpoint yet — this reads your real logged-in name.</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ============================================================
 // ROOT APP
 // ============================================================
@@ -2897,11 +2761,12 @@ function Workspace() {
   const navItems = role === "super_admin" ? NAV_SUPER : NAV_ADMIN.filter((i) => !hiddenPages.includes(i.key));
   const firstPage = navItems[0]?.key || "inbox";
   const [page, setPage] = useState(firstPage);
+  const [inboxNumber, setInboxNumber] = useState(null); // number whose chats the inbox shows (null = all numbers together)
 
   // Pick up page-visibility changes made by the Super Admin since sign-in.
   useEffect(() => {
     if (role === "super_admin") return;
-    apiFetch("/admins/me", { token }).then((me) => setHiddenPages(me.hidden_pages || [])).catch(() => {});
+    callServer("/admins/me", { token }).then((me) => setHiddenPages(me.hidden_pages || [])).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Never render a page this admin is not allowed to see.
@@ -2913,15 +2778,14 @@ function Workspace() {
   const pageMap = {
     dashboard: role === "super_admin" ? <SuperAdminDashboard /> : <AdminDashboard />,
     admins: <AdminsPage />,
-    numbers: <NumbersPage role={role} />,
-    inbox: <InboxPage />,
+    numbers: <NumbersPage onOpenNumber={(id) => { setInboxNumber(id); setPage("inbox"); }} />,
+    inbox: <InboxPage numberId={inboxNumber} onNumberChange={setInboxNumber} />,
     crm: <CrmPage />,
     campaigns: <CampaignsPage />,
     automations: <AutomationsPage />,
     chatbot: <ChatbotPage />,
     analytics: <AnalyticsPage />,
     activity: <ActivityLogsPage />,
-    settings: <SettingsPage role={role} />,
   };
 
   return (
