@@ -7,7 +7,7 @@ import {
   Smile, Square, Trash2, UserCog,
   ChevronRight, ChevronLeft, Eye, Pencil, LogOut,
   CircleDot, Clock, Construction, ArrowDown, GitBranch, MessageCircle, Save, Menu,
-  Zap, ListTree, RefreshCw, AlertCircle, WifiOff, FileText
+  Zap, ListTree, RefreshCw, AlertCircle, WifiOff, FileText, Copy
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -1072,6 +1072,61 @@ function AdminDashboard() {
 // ============================================================
 // WHATSAPP NUMBERS
 // ============================================================
+function ConnectionCheckModal({ onClose }) {
+  const { token } = useAuth();
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [running, setRunning] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const run = async () => {
+    setRunning(true);
+    setError(null);
+    try { setResult(await callServer("/system/connection-check", { method: "POST", token })); } catch (err) { setError(err.message); } finally { setRunning(false); }
+  };
+  useEffect(() => { run(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const problems = result ? result.checks.filter((c) => c.status === "fail").length : 0;
+  const icon = { ok: [Check, C.jade], warn: [AlertCircle, C.amber], fail: [AlertCircle, C.rust] };
+  return (
+    <Modal title="Check connection" onClose={onClose} width={620}>
+      <div className="text-[12px] mb-3" style={{ fontFamily: F.b, color: C.inkSoft }}>Checks everything between a customer's text and this app, using the same connection the app uses.</div>
+      {running && <div className="text-[12.5px] py-6 text-center" style={{ fontFamily: F.b, color: C.inkSoft }}>Checking... this takes a few seconds.</div>}
+      {error && <div className="text-[12px] mb-3 px-3 py-2" style={{ fontFamily: F.b, color: C.rust, background: C.rustSoft, borderRadius: 6 }}>{error}</div>}
+      {result && !running && (
+        <>
+          <div className="text-[13px] font-semibold mb-3 px-3 py-2" data-testid="check-summary" style={{ fontFamily: F.d, color: problems ? C.rust : C.jade, background: problems ? C.rustSoft : C.jadeSoft, borderRadius: 7 }}>
+            {problems ? `Found ${problems} problem${problems === 1 ? "" : "s"}. Fix the red items below.` : "Everything looks fine."}
+          </div>
+          <div style={{ maxHeight: 360, overflowY: "auto" }}>
+            {result.checks.map((c) => {
+              const [Icon, color] = icon[c.status] || icon.warn;
+              return (
+                <div key={c.key} className="flex gap-2.5 py-2" style={{ borderBottom: `1px solid ${C.hairlineSoft}` }} data-check={c.key} data-status={c.status}>
+                  <Icon size={15} color={color} className="shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <div className="text-[12.5px] font-medium" style={{ fontFamily: F.b, color: C.ink }}>{c.label}</div>
+                    <div className="text-[11.5px]" style={{ fontFamily: F.b, color: C.inkSoft }}>{c.detail}</div>
+                    {c.fix && <div className="text-[11.5px] mt-0.5" style={{ fontFamily: F.b, color }}>What to do: {c.fix}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {result.webhook_url && (
+            <div className="mt-3">
+              <div className="text-[11.5px] font-medium mb-1" style={{ fontFamily: F.b, color: C.inkSoft }}>Address the notifications must be sent to</div>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-[11.5px] px-2.5 py-2 truncate" style={{ fontFamily: F.m, background: C.bg, border: `1px solid ${C.hairline}`, borderRadius: 6 }}>{result.webhook_url}</code>
+                <button onClick={() => navigator.clipboard?.writeText(result.webhook_url).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }, () => {})} className="flex items-center gap-1 text-[11.5px] px-2.5 py-2" style={{ fontFamily: F.b, color: C.jade, border: `1px solid ${C.jade}`, borderRadius: 6 }}><Copy size={12} />{copied ? "Copied" : "Copy"}</button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      <div className="flex gap-2 mt-4"><GhostBtn onClick={onClose}>Close</GhostBtn><PrimaryBtn disabled={running} onClick={run}>{running ? "Checking..." : "Run again"}</PrimaryBtn></div>
+    </Modal>
+  );
+}
+
 function NumbersPage({ role, onOpenNumber }) {
   const isSuper = role === "super_admin";
   const [assigning, setAssigning] = useState(null);
@@ -1084,10 +1139,12 @@ function NumbersPage({ role, onOpenNumber }) {
   const live = useLiveNumbers();
   const liveById = Object.fromEntries(live.data.map((l) => [l.id, l.connection]));
   const [sync, setSync] = useState(null);
+  const [webhook, setWebhook] = useState(null);
+  const [checking, setChecking] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshNote, setRefreshNote] = useState(null);
 
-  const loadSync = () => callServer("/system/whatsapp", { token }).then((st) => setSync(st.sync || null), () => {});
+  const loadSync = () => callServer("/system/whatsapp", { token }).then((st) => { setSync(st.sync || null); setWebhook(st.webhook || null); }, () => {});
   useEffect(() => {
     loadSync();
     const t = setInterval(loadSync, 15000);
@@ -1118,7 +1175,16 @@ function NumbersPage({ role, onOpenNumber }) {
   return (
     <div>
       <PageHeader title="WhatsApp Numbers" desc={numbers.loading ? "Loading..." : `${numbers.data.length} numbers connected · click a number to open its chats`}
-        action={isSuper && <div className="flex gap-2"><GhostBtn onClick={() => refresh(false)}><span className="flex items-center gap-1.5"><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Checking..." : "Refresh"}</span></GhostBtn><GhostBtn onClick={() => refresh(true)}>Re-import chats</GhostBtn></div>} />
+        action={isSuper && <div className="flex gap-2"><GhostBtn onClick={() => refresh(false)}><span className="flex items-center gap-1.5"><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Checking..." : "Refresh"}</span></GhostBtn><GhostBtn onClick={() => refresh(true)}>Re-import chats</GhostBtn><PrimaryBtn onClick={() => setChecking(true)}>Check connection</PrimaryBtn></div>} />
+      {checking && <ConnectionCheckModal onClose={() => { setChecking(false); loadSync(); }} />}
+      {isSuper && webhook && (
+        <div className="text-[11.5px] mb-2" style={{ fontFamily: F.b, color: webhook.received ? C.inkFaint : C.amber }} data-testid="webhook-line">
+          {webhook.received
+            ? `Live messages received: ${webhook.received} since the server started · last ${fmtDateTime(webhook.last_at)}`
+            : "No live message notification has reached the server since it started. Texts still arrive within a minute through the catch-up, but press Check connection to find out why."}
+          {webhook.rejected_signature ? ` · ${webhook.rejected_signature} refused (wrong secret?)` : ""}
+        </div>
+      )}
       {sync && !problem && (
         <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.inkFaint }}>
           {sync.last_ok_at ? `Last checked ${fmtDateTime(sync.last_ok_at)} · ${sync.accounts_found} WhatsApp account${sync.accounts_found === 1 ? "" : "s"} found` : "Checking your connected WhatsApp accounts..."}
@@ -1668,6 +1734,27 @@ function InboxPage({ numberId, onNumberChange }) {
   const conversations = useServerList("/inbox/conversations", { params: { status: filter === "all" ? undefined : filter, number_id: numberId || undefined }, refreshMs: 5000 });
   const numbers = useServerList("/numbers", { refreshMs: 15000 });
   const totalUnread = numbers.data.reduce((sum, n) => sum + (n.unread || 0), 0);
+  const [retrieving, setRetrieving] = useState(false);
+  const [retrieveNote, setRetrieveNote] = useState(null);
+  // Pulls the latest messages from WhatsApp right now (the numbers being shown), and says what it found.
+  const retrieve = async () => {
+    setRetrieving(true);
+    setRetrieveNote(null);
+    try {
+      const r = await callServer(`/inbox/retrieve${numberId ? `?number_id=${numberId}` : ""}`, { method: "POST", token });
+      const problem = r.ok === false ? r.error : (r.errors || []).map((e) => `${e.number}: ${e.error}`).join(" · ");
+      if (problem) setRetrieveNote({ ok: false, text: problem });
+      else if (r.busy) setRetrieveNote({ ok: true, text: r.message });
+      else if (r.new_messages > 0) setRetrieveNote({ ok: true, text: `Retrieved ${r.new_messages} new message${r.new_messages === 1 ? "" : "s"} from ${r.chats} chat${r.chats === 1 ? "" : "s"}.` });
+      else setRetrieveNote({ ok: true, text: `No new messages — you're up to date (${r.numbers} number${r.numbers === 1 ? "" : "s"} checked).` });
+      conversations.reload();
+      numbers.reload();
+    } catch (err) {
+      setRetrieveNote({ ok: false, text: err.message });
+    } finally {
+      setRetrieving(false);
+    }
+  };
   const [activeConvId, setActiveConvId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -1800,6 +1887,12 @@ function InboxPage({ numberId, onNumberChange }) {
             {numbers.data.map((n) => <option key={n.id} value={n.id}>{n.display_name}{n.unread ? ` · ${n.unread} unread` : ""}</option>)}
           </select>
         </div>
+        <div className="px-3.5 pt-2">
+          <button type="button" onClick={retrieve} disabled={retrieving} data-testid="retrieve-btn" className="w-full flex items-center justify-center gap-1.5 text-[11.5px] font-medium px-3 py-1.5" style={{ fontFamily: F.b, color: C.jade, border: `1px solid ${C.jade}`, borderRadius: 7, background: C.white, opacity: retrieving ? 0.7 : 1 }}>
+            <RefreshCw size={12} className={retrieving ? "animate-spin" : ""} /> {retrieving ? "Retrieving..." : "Retrieve messages"}
+          </button>
+          {retrieveNote && <div className="text-[11px] mt-1.5" data-testid="retrieve-note" style={{ fontFamily: F.b, color: retrieveNote.ok ? C.inkSoft : C.rust }}>{retrieveNote.text}</div>}
+        </div>
         <div className="px-3.5 pt-3.5 pb-2.5 flex items-center justify-between gap-2">
           <div className="flex gap-1">
             {[["all", "All"], ["needs_human", "Needs human"], ["bot", "Bot"]].map(([k, l]) => (
@@ -1810,7 +1903,7 @@ function InboxPage({ numberId, onNumberChange }) {
         </div>
         <div className="flex-1 overflow-y-auto">
           {conversations.loading && <div className="px-3.5 py-6 text-[12px]" style={{ fontFamily: F.b, color: C.inkFaint }}>Loading conversations...</div>}
-          {!conversations.loading && conversations.data.length === 0 && <div className="px-3.5 py-6 text-[12px]" style={{ fontFamily: F.b, color: C.inkFaint }}>No conversations yet.</div>}
+          {!conversations.loading && conversations.data.length === 0 && <div className="px-3.5 py-6 text-[12px]" style={{ fontFamily: F.b, color: C.inkFaint }}>No conversations yet. Press Retrieve messages to load them now.</div>}
           {conversations.data.map((c) => {
             const active = c.id === activeConvId;
             return (
@@ -2663,6 +2756,20 @@ function AutomationsPage() {
     setOpenBuilder(automation);
   };
 
+  const deleteAutomation = async (automation) => {
+    if (!window.confirm(`Delete automation "${automation.name}"? Its run history is removed. Messages it already sent stay in the chats.`)) return;
+    setBusy(true);
+    try {
+      await callServer(`/automations/${automation.id}`, { method: "DELETE", token });
+      setOpenBuilder((current) => current?.id === automation.id ? null : current);
+      automations.reload();
+    } catch (err) {
+      alert(err.message || "Could not delete automation");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const toggleStatus = async (automation) => {
     const next = automation.status === "Running" ? "Paused" : "Running";
     setBusy(true);
@@ -2968,7 +3075,7 @@ function AutomationsPage() {
                 <Td mono>{a.delivered.toLocaleString()}</Td>
                 <Td mono>{a.replies}</Td>
                 <Td><div className="flex items-center gap-2"><div style={{ width: 50, height: 5, background: C.hairlineSoft, borderRadius: 3 }}><div style={{ width: `${progress}%`, height: 5, background: C.jade, borderRadius: 3 }} /></div><span className="text-[10.5px]" style={{ fontFamily: F.m, color: C.inkSoft }}>{progress}%</span></div></Td>
-                <Td><div className="flex gap-1.5 items-center"><button type="button" onClick={() => toggleStatus(a)} disabled={busy} className="text-[11px] px-2 py-1" style={{ fontFamily: F.b, color: a.status === "Running" ? C.amber : C.jade, border: `1px solid ${a.status === "Running" ? C.amber : C.jade}`, borderRadius: 6 }}>{a.status === "Running" ? "Pause" : "Activate"}</button><button type="button" onClick={() => openAutomation(a)} className="text-[11px] px-2 py-1" style={{ fontFamily: F.b, color: C.jade, border: `1px solid ${C.jade}`, borderRadius: 6 }}>Edit</button></div></Td>
+                <Td><div className="flex gap-1.5 items-center"><button type="button" onClick={() => toggleStatus(a)} disabled={busy} className="text-[11px] px-2 py-1" style={{ fontFamily: F.b, color: a.status === "Running" ? C.amber : C.jade, border: `1px solid ${a.status === "Running" ? C.amber : C.jade}`, borderRadius: 6 }}>{a.status === "Running" ? "Pause" : "Activate"}</button><button type="button" onClick={() => openAutomation(a)} className="text-[11px] px-2 py-1" style={{ fontFamily: F.b, color: C.jade, border: `1px solid ${C.jade}`, borderRadius: 6 }}>Edit</button><button type="button" onClick={() => deleteAutomation(a)} disabled={busy} className="text-[11px] px-2 py-1" style={{ fontFamily: F.b, color: C.rust, border: `1px solid ${C.rust}`, borderRadius: 6 }}>Delete</button></div></Td>
               </tr>
             );
           })}
