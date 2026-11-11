@@ -1095,12 +1095,12 @@ function NumbersPage({ role, onOpenNumber }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  const refresh = async () => {
+  const refresh = async (full = false) => {
     setRefreshing(true);
     setRefreshNote(null);
     try {
-      const r = await callServer("/numbers/refresh", { method: "POST", token });
-      setRefreshNote(r.ok ? { ok: true, text: `Found ${r.accounts_found} WhatsApp account${r.accounts_found === 1 ? "" : "s"}${r.created ? ` (${r.created} new)` : ""}. Chats are loading in the background.` } : { ok: false, text: r.error });
+      const r = await callServer(`/numbers/refresh${full ? "?full=true" : ""}`, { method: "POST", token });
+      setRefreshNote(r.ok ? { ok: true, text: full ? `Reading every chat of your ${r.accounts_found} WhatsApp account${r.accounts_found === 1 ? "" : "s"} again. They reappear here within a few minutes; nothing is deleted.` : `Found ${r.accounts_found} WhatsApp account${r.accounts_found === 1 ? "" : "s"}${r.created ? ` (${r.created} new)` : ""}. Chats are loading in the background.` } : { ok: false, text: r.error });
       numbers.reload();
       loadSync();
     } catch (err) {
@@ -1118,7 +1118,7 @@ function NumbersPage({ role, onOpenNumber }) {
   return (
     <div>
       <PageHeader title="WhatsApp Numbers" desc={numbers.loading ? "Loading..." : `${numbers.data.length} numbers connected · click a number to open its chats`}
-        action={isSuper && <GhostBtn onClick={refresh}><span className="flex items-center gap-1.5"><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Checking..." : "Refresh"}</span></GhostBtn>} />
+        action={isSuper && <div className="flex gap-2"><GhostBtn onClick={() => refresh(false)}><span className="flex items-center gap-1.5"><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Checking..." : "Refresh"}</span></GhostBtn><GhostBtn onClick={() => refresh(true)}>Re-import chats</GhostBtn></div>} />
       {sync && !problem && (
         <div className="text-[11.5px] mb-3" style={{ fontFamily: F.b, color: C.inkFaint }}>
           {sync.last_ok_at ? `Last checked ${fmtDateTime(sync.last_ok_at)} · ${sync.accounts_found} WhatsApp account${sync.accounts_found === 1 ? "" : "s"} found` : "Checking your connected WhatsApp accounts..."}
