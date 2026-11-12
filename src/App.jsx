@@ -1021,7 +1021,7 @@ function SuperAdminDashboard() {
 
 function AdminDashboard() {
   const numbers = useServerList("/numbers");
-  const automations = useServerList("/automations");
+  const automations = useServerList("/automations", { refreshMs: 5000 });
   const summary = useServerList("/analytics/summary", { refreshMs: 30000 });
 
   if (numbers.error || automations.error || summary.error) {
@@ -2707,7 +2707,7 @@ function AutomationsPage() {
   const { token } = useAuth();
   const wa = useWhatsAppStatus();
   const replyDefaults = wa?.reply_delay || { min: 15, max: 30 };
-  const automations = useServerList("/automations");
+  const automations = useServerList("/automations", { refreshMs: 5000 });
   const [showNew, setShowNew] = useState(false);
   const [openBuilder, setOpenBuilder] = useState(null);
   const [busy, setBusy] = useState(false);
