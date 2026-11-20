@@ -1143,8 +1143,33 @@ function NumbersPage({ role, onOpenNumber }) {
   const [checking, setChecking] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshNote, setRefreshNote] = useState(null);
+  const [providers, setProviders] = useState(null);
+  const [providerNote, setProviderNote] = useState(null);
 
-  const loadSync = () => callServer("/system/whatsapp", { token }).then((st) => { setSync(st.sync || null); setWebhook(st.webhook || null); }, () => {});
+  const loadSync = () => callServer("/system/whatsapp", { token }).then((st) => { setSync(st.sync || null); setWebhook(st.webhook || null); setProviders(st.providers || null); }, () => {});
+
+  // Super Admin: which API carries this number — a QR-linked account ("linked") or the official WasapFlow API.
+  const changeProvider = async (n, provider) => {
+    setProviderNote(null);
+    try {
+      await callServer(`/numbers/${n.id}`, { method: "PATCH", token, body: { provider } });
+      setProviderNote({ ok: true, text: `${n.display_name} now sends and receives through ${provider === "wasapflow" ? "WasapFlow" : "a linked WhatsApp account"}.` });
+      numbers.reload();
+    } catch (err) {
+      setProviderNote({ ok: false, text: err.message });
+    }
+  };
+  // Opens WasapFlow's hosted sign-up page, where the client connects their WhatsApp Business number.
+  const connectWasapflow = async () => {
+    setProviderNote(null);
+    try {
+      const r = await callServer("/wasapflow/connect-session", { method: "POST", token, body: {} });
+      if (r.connect_url) window.open(r.connect_url, "_blank", "noopener");
+      setProviderNote({ ok: true, text: "The WasapFlow connect page opened in a new tab. Once the number is connected it appears here within a few minutes (or press Refresh)." });
+    } catch (err) {
+      setProviderNote({ ok: false, text: err.message });
+    }
+  };
   useEffect(() => {
     loadSync();
     const t = setInterval(loadSync, 15000);
@@ -1156,6 +1181,7 @@ function NumbersPage({ role, onOpenNumber }) {
     setRefreshing(true);
     setRefreshNote(null);
     try {
+      if (providers?.wasapflow?.configured) callServer("/wasapflow/sync", { method: "POST", token }).catch(() => {});
       const r = await callServer(`/numbers/refresh${full ? "?full=true" : ""}`, { method: "POST", token });
       setRefreshNote(r.ok ? { ok: true, text: full ? `Reading every chat of your ${r.accounts_found} WhatsApp account${r.accounts_found === 1 ? "" : "s"} again. They reappear here within a few minutes; nothing is deleted.` : `Found ${r.accounts_found} WhatsApp account${r.accounts_found === 1 ? "" : "s"}${r.created ? ` (${r.created} new)` : ""}. Chats are loading in the background.` } : { ok: false, text: r.error });
       numbers.reload();
@@ -1175,7 +1201,7 @@ function NumbersPage({ role, onOpenNumber }) {
   return (
     <div>
       <PageHeader title="WhatsApp Numbers" desc={numbers.loading ? "Loading..." : `${numbers.data.length} numbers connected · click a number to open its chats`}
-        action={isSuper && <div className="flex gap-2"><GhostBtn onClick={() => refresh(false)}><span className="flex items-center gap-1.5"><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Checking..." : "Refresh"}</span></GhostBtn><GhostBtn onClick={() => refresh(true)}>Re-import chats</GhostBtn><PrimaryBtn onClick={() => setChecking(true)}>Check connection</PrimaryBtn></div>} />
+        action={isSuper && <div className="flex gap-2"><GhostBtn onClick={() => refresh(false)}><span className="flex items-center gap-1.5"><RefreshCw size={13} className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Checking..." : "Refresh"}</span></GhostBtn><GhostBtn onClick={() => refresh(true)}>Re-import chats</GhostBtn>{providers?.wasapflow?.configured && <GhostBtn onClick={connectWasapflow}>Connect WasapFlow number</GhostBtn>}<PrimaryBtn onClick={() => setChecking(true)}>Check connection</PrimaryBtn></div>} />
       {checking && <ConnectionCheckModal onClose={() => { setChecking(false); loadSync(); }} />}
       {isSuper && webhook && (
         <div className="text-[11.5px] mb-2" style={{ fontFamily: F.b, color: webhook.received ? C.inkFaint : C.amber }} data-testid="webhook-line">
@@ -1191,6 +1217,7 @@ function NumbersPage({ role, onOpenNumber }) {
           {sync.history_importing ? " · loading chats..." : ""}{isSuper && sync.application_id ? ` · ${sync.application_id}` : ""}
         </div>
       )}
+      {providerNote && <div className="text-[11.5px] mb-3 px-3 py-2" style={{ fontFamily: F.b, color: providerNote.ok ? C.ink : C.rust, background: providerNote.ok ? C.jadeSoft : C.rustSoft, borderRadius: 6 }}>{providerNote.text}</div>}
       {refreshNote?.ok && !problem && <div className="text-[11.5px] mb-3 px-3 py-2" style={{ fontFamily: F.b, color: C.ink, background: C.jadeSoft, borderRadius: 6 }}>{refreshNote.text}</div>}
       {problem && (
         <div className="flex items-start gap-2 text-[12px] mb-3 px-3 py-2.5" style={{ fontFamily: F.b, color: C.rust, background: C.rustSoft, borderRadius: 6 }}>
@@ -1207,7 +1234,7 @@ function NumbersPage({ role, onOpenNumber }) {
       )}
       {!numbers.loading && !numbers.error && numbers.data.length > 0 && (
         <>
-          <Table columns={["Phone Number", "Display Name", ...(isSuper ? ["Assigned to"] : []), "Connection", "Chats", "Unread", "Last Activity", ""]}>
+          <Table columns={["Phone Number", "Display Name", ...(isSuper ? ["Assigned to", "API provider"] : []), "Connection", "Chats", "Unread", "Last Activity", ""]}>
             {paged.map((n) => (
               <tr key={n.id} onClick={() => open(n.id)} onKeyDown={(e) => { if (e.key === "Enter") open(n.id); }} tabIndex={0} role="button" style={{ cursor: "pointer" }} title="Open this number's chats">
                 <Td mono>{n.phone}</Td>
@@ -1218,6 +1245,15 @@ function NumbersPage({ role, onOpenNumber }) {
                       <span className="text-[12px]" style={{ fontFamily: F.b, color: n.admin_name ? C.ink : C.inkFaint }}>{n.admin_name || "Unassigned"}</span>
                       <button type="button" onClick={(e) => { e.stopPropagation(); setAssigning(n); }} onKeyDown={(e) => e.stopPropagation()} className="px-2 py-0.5 text-[11px] font-medium" style={{ fontFamily: F.b, color: C.jade, border: `1px solid ${C.jade}`, borderRadius: 5 }}>Assign</button>
                     </div>
+                  </Td>
+                )}
+                {isSuper && (
+                  <Td>
+                    <select value={n.provider || "linked"} aria-label={`API provider for ${n.display_name}`} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}
+                      onChange={(e) => changeProvider(n, e.target.value)} className="text-[12px] px-1.5 py-1" style={{ fontFamily: F.b, color: C.ink, border: `1px solid ${C.hairline}`, borderRadius: 5, background: C.white }}>
+                      <option value="linked">Linked account (QR)</option>
+                      <option value="wasapflow" disabled={providers ? !providers.wasapflow?.configured : false}>WasapFlow (official API)</option>
+                    </select>
                   </Td>
                 )}
                 <Td><ConnectionPill connection={liveById[n.id] || "unknown"} /></Td>
